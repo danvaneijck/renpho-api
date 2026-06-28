@@ -12,6 +12,7 @@ from .constants import (
     ENDPOINTS,
     PLATFORM,
     SUCCESS_CODES,
+    SYSTEM_VERSION,
 )
 from .crypto import (
     decrypt_response,
@@ -63,8 +64,24 @@ class RenphoClient:
 
     # ----- internal helpers -----
 
-    def _post(self, endpoint: str, body: dict, *, auth: bool = True) -> dict:
-        """Make an encrypted POST request to the Renpho API."""
+    def _post(
+        self,
+        endpoint: str,
+        body: dict,
+        *,
+        auth: bool = True,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict:
+        """Make an encrypted POST request to the Renpho API.
+
+        Args:
+            endpoint: Endpoint path (from :data:`~renpho.constants.ENDPOINTS`).
+            body: Already-encrypted request body (``{"encryptData": ...}``).
+            auth: Attach the standard auth headers (token/userId/...).
+            extra_headers: Additional headers merged on top of the auth headers.
+                Some endpoints (e.g. the girth upload) require a fuller header
+                set than the default reads.
+        """
         url = f"{API_BASE_URL}/{endpoint}"
         headers: dict[str, str] = {}
         if auth and self.token:
@@ -72,6 +89,8 @@ class RenphoClient:
             headers["userId"] = str(self.user_id)
             headers["appVersion"] = APP_VERSION
             headers["platform"] = PLATFORM
+        if extra_headers:
+            headers.update(extra_headers)
 
         if self.debug:
             print(f"  POST {url}")
@@ -322,6 +341,109 @@ class RenphoClient:
             reverse=True,
         )
         return all_measurements
+
+    # ----- tape measure (body girth) -----
+
+    def get_girths(self, *, page_size: int = 100, page_num: int = 1) -> list[dict]:
+        """Fetch Smart Tape Measure (body girth) records.
+
+        Returns the raw girth records, one per measurement session, newest first
+        as returned by the server. Use :func:`renpho.girth.normalize_girth` to
+        reduce a record to the sites that were actually measured. All
+        circumferences are in centimetres.
+
+        Calls :meth:`login` first if no token is set.
+
+        Args:
+            page_size: Records per page (the app uses 100).
+            page_num: 1-based page number.
+
+        Returns:
+            List of raw girth record dicts.
+
+        Raises:
+            RenphoAPIError: On API-level failure.
+        """
+        if not self.token:
+            self.login()
+
+        body = encrypt_request({"pageSize": str(page_size), "pageNum": str(page_num)})
+        result = self._post(ENDPOINTS["girth_list"], body)
+        _check_response(result, "GetGirths")
+
+        if not result.get("data"):
+            return []
+
+        data = decrypt_response(result["data"])
+        if isinstance(data, list):
+            return data
+        return self._extract_records(data) or []
+
+    def _girth_write_headers(
+        self, time_zone: str, zone_id: str, device_id: str
+    ) -> dict[str, str]:
+        """The fuller header set the app sends on girth WRITE calls.
+
+        The upload endpoint returns HTTP 400 (``Missing request header
+        'timeZone'``) unless these are present; the read endpoints do not need
+        them. ``time_zone`` is the short form (e.g. ``"-5"``), NOT ``"-5:00"``.
+        """
+        return {
+            "userid": str(self.user_id),
+            "platform": "ios",
+            "timezone": time_zone,
+            "zoneid": zone_id,
+            "appversion": APP_VERSION,
+            "systemversion": SYSTEM_VERSION,
+            "language": "en",
+            "languagecode": "en",
+            "area": "US",
+            "userarea": "US",
+            "phone": "python-client",
+            "devid": device_id,
+        }
+
+    def upload_girths(
+        self,
+        records: list[dict],
+        *,
+        time_zone: str = "+0",
+        zone_id: str = "UTC",
+        device_id: str = "renpho-api-python",
+    ) -> list[dict]:
+        """Upload (append) girth records via ``uploadGirthsDataV2``.
+
+        Build *records* with :func:`renpho.girth.build_girth_record`. The
+        endpoint only **adds** — there is no in-place replace, so re-uploading an
+        existing date creates a second entry on the server.
+
+        Calls :meth:`login` first if no token is set.
+
+        Args:
+            records: List of records from :func:`renpho.girth.build_girth_record`.
+            time_zone: Short-form offset header (e.g. ``"-5"``, NOT ``"-5:00"``).
+            zone_id: IANA zone id header (e.g. ``"America/New_York"``).
+            device_id: Device identifier header value.
+
+        Returns:
+            The server acknowledgements (a list of ``{id, timeStamp}`` dicts).
+
+        Raises:
+            RenphoAPIError: On API-level failure.
+        """
+        if not self.token:
+            self.login()
+
+        encrypted_body = encrypt_request(records)
+        headers = self._girth_write_headers(time_zone, zone_id, device_id)
+        result = self._post(
+            ENDPOINTS["girth_upload"], encrypted_body, extra_headers=headers
+        )
+        _check_response(result, "UploadGirths")
+
+        if not result.get("data"):
+            return []
+        return decrypt_response(result["data"])
 
     @staticmethod
     def _extract_records(page_data) -> list[dict] | None:

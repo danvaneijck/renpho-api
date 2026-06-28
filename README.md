@@ -106,6 +106,71 @@ except RenphoAPIError as e:
     print(f"API error: {e}")
 ```
 
+## Smart Tape Measure (body girth)
+
+The Renpho Smart Tape Measure stores circumference measurements (waist, hip,
+arms, thighs, etc.) under a separate set of endpoints from the smart scale. The
+same login/token works for both. All circumferences are in **centimetres**.
+
+### Reading girths
+
+```python
+from renpho import RenphoClient, normalize_girth, format_girth
+
+client = RenphoClient("user@example.com", "password")
+client.login()
+
+girths = client.get_girths()  # raw records, newest first
+
+for record in girths[:5]:
+    print(format_girth(record))
+
+# Or reduce a record to just the sites that were measured (zeros omitted):
+latest = normalize_girth(girths[0])
+# -> {"date": "2024-06-27", "waist": 90.0, "left_arm": 33.0, "hip": 100.0, "whr": 0.9, ...}
+```
+
+`normalize_girth()` returns the local measurement `date` (from `timeStamp` +
+`timeZone`), each measured site in cm, and `whr` (waist/hip ratio) when present.
+A site that was not measured comes back as `0.0` and is omitted rather than
+reported as a real zero.
+
+**Site names** returned by `normalize_girth()` / accepted by
+`build_girth_record()`: `neck`, `shoulder`, `chest`, `waist`, `hip`, `abdomen`,
+`left_arm` / `right_arm` (upper arm), `left_thigh` / `right_thigh`,
+`left_calf` / `right_calf`.
+
+### Writing girths (backfill)
+
+`upload_girths()` appends historical measurements (useful for backfilling the
+app's history graph). The endpoint only **adds** — there is no in-place
+replace, so re-uploading an existing date creates a second entry.
+
+```python
+from renpho import RenphoClient, build_girth_record
+
+client = RenphoClient("user@example.com", "password")
+client.login()
+
+record = build_girth_record(
+    {"waist": 90.0, "left_arm": 33.0, "right_arm": 33.5},
+    user_id=client.user_id,
+    timestamp=1719500400,        # epoch seconds for the measurement
+    time_zone="-5:00",
+)
+
+acks = client.upload_girths(
+    [record],
+    time_zone="-5",                    # short form, NOT "-5:00"
+    zone_id="America/New_York",
+)
+# acks -> [{"id": <server id>, "timeStamp": 1719500400}]
+```
+
+> **Note:** the upload endpoint returns HTTP 400 (`Missing request header
+> 'timeZone'`) unless the fuller app header set is sent. `upload_girths()`
+> handles that for you — just pass `time_zone` (short form) and `zone_id`.
+
 ## Available Metrics
 
 Each measurement dict can contain these fields (availability depends on your scale model):
@@ -139,9 +204,10 @@ renpho-api/
 │   ├── __init__.py       # Public API exports
 │   ├── client.py         # RenphoClient class
 │   ├── cli.py            # CLI entry point
-│   ├── constants.py      # API endpoints, device types, metrics
+│   ├── constants.py      # API endpoints, device types, metrics, girth sites
 │   ├── crypto.py         # AES encryption/decryption
-│   └── export.py         # JSON/CSV export helpers
+│   ├── export.py         # JSON/CSV export helpers
+│   └── girth.py          # Smart Tape Measure (body girth) helpers
 ├── tests/                # Unit tests
 └── .github/workflows/    # CI + PyPI release automation
 ```
