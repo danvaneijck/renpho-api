@@ -14,6 +14,7 @@ ENDPOINTS = {
     "family": "RenphoHealth/centerUser/queryFamilyMemberList",
     "measurements": "RenphoHealth/scale/queryAllMeasureDataList",
     "body_composition_measurements": "RenphoHealth/scale/queryBodyCompositionMeasureData",
+    "girth_measurements": "RenphoHealth/renpho/girth/queryAllGirthsDataList",
 }
 
 # Body weight scale device types
@@ -40,6 +41,29 @@ METRICS = [
     ("heartRate", "Heart Rate", "bpm"),
     ("cardiacIndex", "Cardiac Index", ""),
     ("bodyShape", "Body Shape", ""),
+]
+
+# Girth (smart tape-measure) metric metadata: (api_key, label, unit)
+# Body circumference data from Renpho smart tape measures (e.g. R-Y002) is
+# stored separately from scale data, under the girth_measurements endpoint.
+# Values are circumferences; the paired ``*Unit`` field encodes cm (0) vs inch.
+GIRTH_METRICS = [
+    ("neckValue", "Neck", "cm"),
+    ("shoulderValue", "Shoulder", "cm"),
+    ("chestValue", "Chest", "cm"),
+    ("waistValue", "Waist", "cm"),
+    ("abdomenValue", "Abdomen", "cm"),
+    ("hipValue", "Hip", "cm"),
+    ("armValue", "Arm", "cm"),
+    ("leftArmValue", "Left Arm", "cm"),
+    ("rightArmValue", "Right Arm", "cm"),
+    ("thighValue", "Thigh", "cm"),
+    ("leftThighValue", "Left Thigh", "cm"),
+    ("rightThighValue", "Right Thigh", "cm"),
+    ("calfValue", "Calf", "cm"),
+    ("leftCalfValue", "Left Calf", "cm"),
+    ("rightCalfValue", "Right Calf", "cm"),
+    ("whrValue", "Waist-to-Hip Ratio", ""),
 ]
 
 # Success codes returned by the API

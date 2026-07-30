@@ -12,11 +12,18 @@ Quick start::
 """
 
 from .client import RenphoAPIError, RenphoClient
-from .export import format_measurement, format_timestamp, save_csv, save_json
+from .export import (
+    format_girth,
+    format_measurement,
+    format_timestamp,
+    save_csv,
+    save_json,
+)
 
 __all__ = [
     "RenphoClient",
     "RenphoAPIError",
+    "format_girth",
     "format_measurement",
     "format_timestamp",
     "save_csv",
