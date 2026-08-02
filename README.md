@@ -24,7 +24,7 @@ pip install "renpho-api[dotenv]"
 
 1. Create a `.env` file (or export the variables):
 
-```
+```ini
 RENPHO_EMAIL=your@email.com
 RENPHO_PASSWORD=your_plain_text_password
 ```
@@ -35,7 +35,10 @@ RENPHO_PASSWORD=your_plain_text_password
 renpho
 ```
 
-This will log in, discover your scales, fetch all measurements, print the 5 most recent, and save everything to `renpho_data/` as JSON and CSV.
+This will log in, discover your scales, fetch all measurements, print the 5 most
+recent, and save everything to `renpho_data/` as JSON and CSV. If the account has
+a smart tape measure it also writes `girth.json` / `girth.csv`; accounts without
+one simply report no girth records.
 
 ### Environment variables
 
@@ -301,7 +304,7 @@ paired `*Unit`, where `0` = cm). Unmeasured fields are returned as `0`.
 
 ## Project Structure
 
-```
+```text
 renpho-api/
 ├── pyproject.toml        # Package config & dependencies
 ├── README.md
