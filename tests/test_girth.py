@@ -6,6 +6,7 @@ All values here are synthetic placeholders, not real measurements.
 from unittest.mock import patch
 
 from renpho.client import RenphoClient
+from renpho.constants import SYSTEM_VERSION
 from renpho.crypto import encrypt_request
 from renpho.export import format_girth, format_timestamp
 from renpho.girth import (
@@ -241,3 +242,50 @@ class TestClientGirths:
             client.upload_girth_measurements([record])
         # requests folds header names case-insensitively; the write value must win
         assert sent["platform"] == "ios"
+
+
+class TestGirthWriteProvenanceTags:
+    """The iOS-flavoured write defaults are the only live-verified combination.
+
+    They are overridable, but the defaults must not drift — changing them
+    silently would turn a verified request into an unverified one.
+    """
+
+    def test_record_defaults_match_captured_traffic(self):
+        record = build_girth_record(
+            {"waist": 90.0}, user_id=123, timestamp=1719500400
+        )
+        assert record["platform"] == "IOS"
+        assert record["dataSource"] == "Health"
+        assert record["measureUnit"] == "1"
+
+    def test_record_tags_are_overridable(self):
+        record = build_girth_record(
+            {"waist": 90.0},
+            user_id=123,
+            timestamp=1719500400,
+            platform="ANDROID",
+            data_source="python",
+        )
+        assert record["platform"] == "ANDROID"
+        assert record["dataSource"] == "python"
+
+    def test_write_header_platform_defaults_to_ios(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "tok"
+        client.user_id = 123
+        headers = client._girth_write_headers("-5", "America/New_York", "dev", "ios")
+        assert headers["platform"] == "ios"
+        # sent alongside the Android-derived system version, as captured
+        assert headers["systemversion"] == SYSTEM_VERSION
+
+    def test_write_header_platform_is_overridable(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "tok"
+        client.user_id = 123
+        record = build_girth_record({"waist": 90.0}, user_id=123, timestamp=1)
+        with patch.object(
+            client, "_post", return_value={"code": 101, "msg": "success", "data": None}
+        ) as mock_post:
+            client.upload_girth_measurements([record], platform="android")
+        assert mock_post.call_args.kwargs["extra_headers"]["platform"] == "android"

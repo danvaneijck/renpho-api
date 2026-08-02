@@ -20,9 +20,15 @@ ENDPOINTS = {
     "girth_upload": "RenphoHealth/renpho/girth/uploadGirthsDataV2",
 }
 
-# Body composition scales shard measurements across 16 tables. Server-side
-# discovery only reports the table for the logged-in user, so the only way
-# to find data belonging to other linked accounts is to probe each suffix.
+# Body composition scales are believed to shard measurements across 16 tables.
+# Server-side discovery only reports the table for the logged-in user, so the
+# only way to find data belonging to other linked accounts is to probe.
+#
+# INFERRED, NOT DOCUMENTED: the 16-table range and the ``measurements_info_<hex>``
+# naming come from observed accounts, so an account whose tables are named
+# differently would probe empty. ``get_all_measurements()`` therefore probes the
+# table names ``device/count`` actually reported before falling back to these,
+# and ``discover_user_tables(..., tables=[...])`` takes an explicit list.
 MEASUREMENT_TABLE_NAMES = [f"measurements_info_{i:X}" for i in range(16)]
 
 # Body weight scale device types
@@ -104,6 +110,27 @@ GIRTH_SITES = [
     ("leftCalfValue", "left_calf", "cm"),
     ("rightCalfValue", "right_calf", "cm"),
 ]
+
+# --- girth write provenance tags ---
+#
+# The girth WRITE endpoint was reverse-engineered from the iOS app, and these
+# iOS-flavoured values are the only combination confirmed to be accepted by a
+# live account. That is the sole reason they differ from the library-wide
+# ``PLATFORM`` ("android") used everywhere else — not a considered choice about
+# what a Python client should claim to be.
+#
+# They are the *defaults*, not fixed values: pass ``platform`` to
+# :meth:`~renpho.RenphoClient.upload_girth_measurements` and ``platform`` /
+# ``data_source`` to :func:`~renpho.girth.build_girth_record` to override. If you
+# confirm the endpoint accepts other values, please open an issue and we can
+# align these with ``PLATFORM``.
+#
+# Note the header set also sends ``systemversion`` = SYSTEM_VERSION ("11", taken
+# from the Android login payload) alongside a platform of "ios". That mismatch is
+# what the captured traffic looked like; the server evidently does not mind.
+GIRTH_WRITE_PLATFORM = "ios"  # `platform` request header on the upload call
+GIRTH_RECORD_PLATFORM = "IOS"  # `platform` field inside the record (upper-case)
+GIRTH_RECORD_DATA_SOURCE = "Health"  # `dataSource` field inside the record
 
 # Every ``*Value`` field the upload endpoint expects (each paired with a matching
 # ``*Unit``). The writer defaults all of them to "0" and fills the measured sites.

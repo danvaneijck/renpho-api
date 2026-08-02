@@ -336,3 +336,47 @@ class TestGetAllMeasurementsExtraUsers:
         ):
             client.get_all_measurements()
         mock_probe.assert_not_called()
+
+
+class TestProbeCandidateOrdering:
+    """The 16-table shard naming is inferred, so authoritative names go first."""
+
+    def _make_client(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "tok"
+        client.user_id = 123
+        return client
+
+    def test_explicit_tables_override_the_inferred_list(self):
+        client = self._make_client()
+        with patch.object(
+            client, "_post", return_value={"code": 101, "msg": "success", "data": None}
+        ) as mock_post:
+            client.discover_user_tables("999", tables=["only_this_one"])
+        assert mock_post.call_count == 1
+
+    def test_device_info_tables_are_probed_before_the_guess(self):
+        client = self._make_client()
+        # a real table name that is NOT part of the inferred pattern
+        real_table = "measurements_info_custom"
+        device_info = {
+            "scale": [{"tableName": real_table, "count": 1, "userIds": [123]}]
+        }
+        seen = []
+
+        def fake_discover(user_id, *, tables=None):
+            seen.extend(tables or [])
+            return []
+
+        with (
+            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_body_composition_measurements", return_value=[]),
+            patch.object(client, "get_measurements", return_value=[]),
+            patch.object(client, "discover_user_tables", side_effect=fake_discover),
+        ):
+            client.get_all_measurements(extra_user_ids=["999"])
+
+        assert seen[0] == real_table, "authoritative table name must be probed first"
+        # and the inferred names still follow, without duplicating it
+        assert set(MEASUREMENT_TABLE_NAMES).issubset(set(seen))
+        assert len(seen) == len(set(seen))

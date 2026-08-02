@@ -10,6 +10,7 @@ from .constants import (
     APP_VERSION,
     BODY_WEIGHT_SCALES,
     ENDPOINTS,
+    GIRTH_WRITE_PLATFORM,
     MEASUREMENT_TABLE_NAMES,
     PLATFORM,
     SUCCESS_CODES,
@@ -297,25 +298,33 @@ class RenphoClient:
 
         return all_measurements
 
-    def discover_user_tables(self, user_id) -> list[str]:
-        """Probe all measurement tables for a given user_id and return the ones with data.
+    def discover_user_tables(self, user_id, *, tables: list | None = None) -> list[str]:
+        """Probe measurement tables for a given user_id and return the ones with data.
 
-        Body composition scales shard measurements across 16 tables
-        (``measurements_info_0`` through ``measurements_info_F``). The server
-        only reports the table for the logged-in user via ``device/count``,
-        so for any other linked account this method probes each suffix.
+        The server only reports the table for the logged-in user via
+        ``device/count``, so for any other linked account the table has to be
+        found by probing.
+
+        Body composition scales are *believed* to shard across 16 tables named
+        ``measurements_info_0`` through ``measurements_info_F``
+        (:data:`~renpho.constants.MEASUREMENT_TABLE_NAMES`), which is inferred
+        from observed accounts rather than documented. Pass *tables* to probe an
+        explicit list instead — :meth:`get_all_measurements` seeds it with the
+        table names ``device/count`` actually reported, which are authoritative.
 
         This costs one request per table, so call it only when you actually need
         data for an account the server did not report.
 
         Args:
             user_id: The user ID to probe for.
+            tables: Candidate table names. Defaults to the inferred 16.
 
         Returns:
             List of table names that contain at least one record for ``user_id``.
         """
+        candidates = MEASUREMENT_TABLE_NAMES if tables is None else tables
         found: list[str] = []
-        for table in MEASUREMENT_TABLE_NAMES:
+        for table in candidates:
             encrypted_body = encrypt_request({
                 "pageNum": 1,
                 "pageSize": 1,
@@ -338,6 +347,13 @@ class RenphoClient:
             records = self._extract_records(page_data)
             if records:
                 found.append(table)
+        if not found and self.debug:
+            print(
+                f"  No table held data for user {user_id} "
+                f"(probed {len(candidates)}). If this account definitely has "
+                f"measurements, the table naming may differ from the assumed "
+                f"pattern — pass tables=[...] explicitly."
+            )
         return found
 
     def get_girth_measurements(self, *, page_size: int = 100) -> list[dict]:
@@ -430,6 +446,7 @@ class RenphoClient:
 
         fetched: set = set()
         all_measurements: list[dict] = []
+        observed_tables: list[str] = []
 
         def collect(table_name, uid, records):
             """Add *records*, skipping rows already seen from the same table."""
@@ -450,6 +467,8 @@ class RenphoClient:
             if not table_name:
                 continue
 
+            observed_tables.append(table_name)
+
             uid = self.user_id
             if user_ids and uid not in user_ids:
                 uid = user_ids[0]
@@ -462,13 +481,19 @@ class RenphoClient:
 
             collect(table_name, uid, measurements)
 
-        for extra_uid in extra_user_ids or []:
-            for table in self.discover_user_tables(extra_uid):
-                collect(
-                    table,
-                    extra_uid,
-                    self.get_body_composition_measurements(table, extra_uid),
-                )
+        if extra_user_ids:
+            # Probe the tables the server actually named first — those are
+            # authoritative — then fall back to the inferred shard names.
+            candidates = observed_tables + [
+                t for t in MEASUREMENT_TABLE_NAMES if t not in observed_tables
+            ]
+            for extra_uid in extra_user_ids:
+                for table in self.discover_user_tables(extra_uid, tables=candidates):
+                    collect(
+                        table,
+                        extra_uid,
+                        self.get_body_composition_measurements(table, extra_uid),
+                    )
 
         all_measurements.sort(
             key=lambda m: m.get("timeStamp", 0) or 0,
@@ -479,17 +504,21 @@ class RenphoClient:
     # ----- tape measure (body girth) writes -----
 
     def _girth_write_headers(
-        self, time_zone: str, zone_id: str, device_id: str
+        self, time_zone: str, zone_id: str, device_id: str, platform: str
     ) -> dict[str, str]:
         """The fuller header set the app sends on girth WRITE calls.
 
         The upload endpoint returns HTTP 400 (``Missing request header
         'timeZone'``) unless these are present; the read endpoints do not need
         them. ``time_zone`` is the short form (e.g. ``"-5"``), NOT ``"-5:00"``.
+
+        *platform* defaults to the captured iOS value rather than the
+        library-wide ``PLATFORM`` — see
+        :data:`~renpho.constants.GIRTH_WRITE_PLATFORM` for why.
         """
         return {
             "userid": str(self.user_id),
-            "platform": "ios",
+            "platform": platform,
             "timezone": time_zone,
             "zoneid": zone_id,
             "appversion": APP_VERSION,
@@ -509,6 +538,7 @@ class RenphoClient:
         time_zone: str = "+0",
         zone_id: str = "UTC",
         device_id: str = "renpho-api-python",
+        platform: str = GIRTH_WRITE_PLATFORM,
     ) -> list[dict]:
         """Upload (append) girth records via ``uploadGirthsDataV2``.
 
@@ -526,6 +556,9 @@ class RenphoClient:
             time_zone: Short-form offset header (e.g. ``"-5"``, NOT ``"-5:00"``).
             zone_id: IANA zone id header (e.g. ``"America/New_York"``).
             device_id: Device identifier header value.
+            platform: ``platform`` header. Defaults to the captured iOS value,
+                the only one verified against a live account — see
+                :data:`~renpho.constants.GIRTH_WRITE_PLATFORM`.
 
         Returns:
             The server acknowledgements (a list of ``{id, timeStamp}`` dicts).
@@ -537,7 +570,7 @@ class RenphoClient:
             self.login()
 
         encrypted_body = encrypt_request(records)
-        headers = self._girth_write_headers(time_zone, zone_id, device_id)
+        headers = self._girth_write_headers(time_zone, zone_id, device_id, platform)
         result = self._post(
             ENDPOINTS["girth_upload"], encrypted_body, extra_headers=headers
         )

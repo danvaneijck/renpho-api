@@ -131,6 +131,7 @@ independent even when emails collide. Options:
 
 Once you have the ID, save it alongside your credentials and you won't
 need to discover it again.
+
 ### Error handling
 
 ```python
@@ -214,13 +215,33 @@ acks = client.upload_girth_measurements(
 # acks -> [{"id": <server id>, "timeStamp": 1719500400}]
 ```
 
-> **Note:** the upload endpoint returns HTTP 400 (`Missing request header
-> 'timeZone'`) unless the fuller app header set is sent.
-> `upload_girth_measurements()` handles that for you — just pass `time_zone`
-> (short form) and `zone_id`.
+> **Notes:**
+>
+> - The upload endpoint returns HTTP 400 (`Missing request header 'timeZone'`)
+>   unless the fuller app header set is sent. `upload_girth_measurements()`
+>   handles that for you — just pass `time_zone` (short form) and `zone_id`.
+> - The server does not recalculate `whrValue` (waist-to-hip ratio) for records
+>   written outside the app, so uploaded entries have no WHR.
 
-> **Note:** the server does not recalculate `whrValue` (waist-to-hip ratio) for
-> records written outside the app, so uploaded entries have no WHR.
+The write path was reverse-engineered from the iOS app, so it tags uploads as
+`platform: ios` / `dataSource: Health` — the only combination confirmed against a
+live account, and the reason it differs from the `android` platform the rest of
+the library sends. Both are overridable if you'd rather not claim iOS:
+
+```python
+record = build_girth_record(
+    {"waist": 90.0},
+    user_id=client.user_id,
+    timestamp=1719500400,
+    platform="ANDROID",        # record tag; default "IOS"
+    data_source="python",      # record tag; default "Health"
+)
+
+client.upload_girth_measurements([record], platform="android")  # header; default "ios"
+```
+
+If you confirm the endpoint accepts other values, please open an issue and we
+can change the defaults.
 
 ## Available Metrics
 

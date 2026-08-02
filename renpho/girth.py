@@ -12,7 +12,12 @@ Everything here is a pure transform — no network access. Use
 
 import datetime
 
-from .constants import GIRTH_SITES, GIRTH_VALUE_FIELDS
+from .constants import (
+    GIRTH_RECORD_DATA_SOURCE,
+    GIRTH_RECORD_PLATFORM,
+    GIRTH_SITES,
+    GIRTH_VALUE_FIELDS,
+)
 
 # site name (e.g. "waist") -> raw api field (e.g. "waistValue")
 _SITE_TO_FIELD = {site: api_field for api_field, site, _unit in GIRTH_SITES}
@@ -91,6 +96,8 @@ def build_girth_record(
     mac: str = "",
     scale_name: str = "",
     firmware_version: str = "",
+    platform: str = GIRTH_RECORD_PLATFORM,
+    data_source: str = GIRTH_RECORD_DATA_SOURCE,
 ) -> dict:
     """Build one ``uploadGirthsDataV2`` record from clean ``{site: cm}`` values.
 
@@ -107,6 +114,10 @@ def build_girth_record(
         mac: Device MAC, if known (optional metadata).
         scale_name: Device model name, if known (optional metadata).
         firmware_version: Device firmware, if known (optional metadata).
+        platform: Provenance tag stored on the record. Defaults to the
+            captured iOS value — see :data:`~renpho.constants.GIRTH_RECORD_PLATFORM`.
+        data_source: Provenance tag stored on the record. Defaults to the
+            captured value — see :data:`~renpho.constants.GIRTH_RECORD_DATA_SOURCE`.
 
     Returns:
         A record dict ready to pass (inside a list) to
@@ -115,11 +126,13 @@ def build_girth_record(
     record = {
         "mac": mac,
         "scaleName": scale_name,
-        "platform": "IOS",
-        "dataSource": "Health",
+        "platform": platform,
+        "dataSource": data_source,
         "firmwareVersion": firmware_version,
         "internalModel": "",
         "custom": "",
+        # Distinct from the per-site ``*Unit`` fields (0 = cm). Copied verbatim
+        # from captured traffic; its exact meaning is unconfirmed.
         "measureUnit": "1",
         "timeZone": time_zone,
         "timeStamp": str(int(timestamp)),
