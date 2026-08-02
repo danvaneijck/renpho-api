@@ -12,6 +12,7 @@ from .constants import (
     ENDPOINTS,
     GIRTH_WRITE_PLATFORM,
     MEASUREMENT_TABLE_NAMES,
+    MEASUREMENT_TABLE_SHARDS,
     PLATFORM,
     SUCCESS_CODES,
     SYSTEM_VERSION,
@@ -186,14 +187,21 @@ class RenphoClient:
         return data
 
     def get_measurements(
-        self, table_name: str, user_id, total_count: int, *, page_size: int = 50
+        self,
+        table_name: str,
+        user_id,
+        total_count: int | None = None,
+        *,
+        page_size: int = 50,
     ) -> list[dict]:
         """Fetch measurements from a specific scale table with pagination.
 
         Args:
             table_name: Dynamic table name from :meth:`get_device_info`.
             user_id: The user ID to query for.
-            total_count: Total records available (from device info).
+            total_count: Total records available (from device info). Pass None
+                when it is not known — pagination then runs until the server
+                stops returning full pages.
             page_size: Records per page (default 50).
 
         Returns:
@@ -202,7 +210,7 @@ class RenphoClient:
         all_measurements: list[dict] = []
         page = 1
 
-        while len(all_measurements) < total_count:
+        while total_count is None or len(all_measurements) < total_count:
             request_data = {
                 "pageNum": page,
                 "pageSize": page_size,
@@ -233,6 +241,10 @@ class RenphoClient:
                 break
 
             all_measurements.extend(records)
+            # Without a total to bound the loop, a short page is the only
+            # signal that the last one has been read.
+            if total_count is None and len(records) < page_size:
+                break
             page += 1
 
         return all_measurements
@@ -298,61 +310,85 @@ class RenphoClient:
 
         return all_measurements
 
+    @staticmethod
+    def measurement_table_for(user_id) -> str | None:
+        """The shard table holding *user_id*'s measurements, or None if underivable.
+
+        Measurements are sharded across
+        :data:`~renpho.constants.MEASUREMENT_TABLE_SHARDS` tables by
+        ``user_id % 24``, so the table can be computed rather than searched for.
+        """
+        try:
+            return f"measurements_info_{int(user_id) % MEASUREMENT_TABLE_SHARDS}"
+        except (TypeError, ValueError):
+            return None
+
+    def _table_has_records(self, table: str, user_id) -> bool:
+        """True if *table* holds at least one record for *user_id*."""
+        encrypted_body = encrypt_request({
+            "pageNum": 1,
+            "pageSize": 1,
+            "userIds": [str(user_id)],
+            "tableName": table,
+        })
+        # Not every account answers on the body composition endpoint — some
+        # return an empty list there while the legacy endpoint has the rows —
+        # so a miss on the first is not proof the table is empty.
+        for endpoint in ("body_composition_measurements", "measurements"):
+            # A table that does not exist is an expected miss, not an error:
+            # keep going rather than aborting the whole sweep.
+            try:
+                result = self._post(ENDPOINTS[endpoint], encrypted_body)
+            except requests.exceptions.HTTPError as e:
+                if self.debug:
+                    print(f"  Probe {table} via {endpoint} failed ({e}), skipping")
+                continue
+            if not result.get("data"):
+                continue
+            if self._extract_records(decrypt_response(result["data"])):
+                return True
+        return False
+
     def discover_user_tables(self, user_id, *, tables: list | None = None) -> list[str]:
-        """Probe measurement tables for a given user_id and return the ones with data.
+        """Find the measurement tables holding data for *user_id*.
 
         The server only reports the table for the logged-in user via
         ``device/count``, so for any other linked account the table has to be
-        found by probing.
+        located here.
 
-        Body composition scales are *believed* to shard across 16 tables named
-        ``measurements_info_0`` through ``measurements_info_F``
-        (:data:`~renpho.constants.MEASUREMENT_TABLE_NAMES`), which is inferred
-        from observed accounts rather than documented. Pass *tables* to probe an
-        explicit list instead — :meth:`get_all_measurements` seeds it with the
-        table names ``device/count`` actually reported, which are authoritative.
-
-        This costs one request per table, so call it only when you actually need
-        data for an account the server did not report.
+        The shard is derivable — ``measurements_info_<user_id % 24>`` — so by
+        default that table is checked first and the remaining shards are only
+        swept if it comes back empty. Pass *tables* to check an explicit list
+        instead; :meth:`get_all_measurements` seeds it with the table names
+        ``device/count`` actually reported, which are authoritative.
 
         Args:
-            user_id: The user ID to probe for.
-            tables: Candidate table names. Defaults to the inferred 16.
+            user_id: The user ID to look for.
+            tables: Candidate table names. Defaults to the computed shard first,
+                then the remaining shards.
 
         Returns:
             List of table names that contain at least one record for ``user_id``.
         """
-        candidates = MEASUREMENT_TABLE_NAMES if tables is None else tables
-        found: list[str] = []
-        for table in candidates:
-            encrypted_body = encrypt_request({
-                "pageNum": 1,
-                "pageSize": 1,
-                "userIds": [str(user_id)],
-                "tableName": table,
-            })
-            # A table that does not exist for this account is an expected miss,
-            # not an error — keep probing the rest rather than aborting.
-            try:
-                result = self._post(
-                    ENDPOINTS["body_composition_measurements"], encrypted_body
-                )
-            except requests.exceptions.HTTPError as e:
-                if self.debug:
-                    print(f"  Probe {table} failed ({e}), skipping")
-                continue
-            if not result.get("data"):
-                continue
-            page_data = decrypt_response(result["data"])
-            records = self._extract_records(page_data)
-            if records:
-                found.append(table)
+        if tables is None:
+            candidates = list(MEASUREMENT_TABLE_NAMES)
+            shard = self.measurement_table_for(user_id)
+            if shard in candidates:
+                # cheap path: the computed shard is almost always the only hit
+                candidates.remove(shard)
+                candidates.insert(0, shard)
+                if self._table_has_records(shard, user_id):
+                    return [shard]
+                candidates = candidates[1:]
+        else:
+            candidates = list(tables)
+
+        found = [t for t in candidates if self._table_has_records(t, user_id)]
         if not found and self.debug:
             print(
                 f"  No table held data for user {user_id} "
-                f"(probed {len(candidates)}). If this account definitely has "
-                f"measurements, the table naming may differ from the assumed "
-                f"pattern — pass tables=[...] explicitly."
+                f"(checked {len(candidates)}). If this account definitely has "
+                f"measurements, pass tables=[...] explicitly."
             )
         return found
 
@@ -446,7 +482,6 @@ class RenphoClient:
 
         fetched: set = set()
         all_measurements: list[dict] = []
-        observed_tables: list[str] = []
 
         def collect(table_name, uid, records):
             """Add *records*, skipping rows already seen from the same table."""
@@ -467,8 +502,6 @@ class RenphoClient:
             if not table_name:
                 continue
 
-            observed_tables.append(table_name)
-
             uid = self.user_id
             if user_ids and uid not in user_ids:
                 uid = user_ids[0]
@@ -481,19 +514,15 @@ class RenphoClient:
 
             collect(table_name, uid, measurements)
 
-        if extra_user_ids:
-            # Probe the tables the server actually named first — those are
-            # authoritative — then fall back to the inferred shard names.
-            candidates = observed_tables + [
-                t for t in MEASUREMENT_TABLE_NAMES if t not in observed_tables
-            ]
-            for extra_uid in extra_user_ids:
-                for table in self.discover_user_tables(extra_uid, tables=candidates):
-                    collect(
-                        table,
-                        extra_uid,
-                        self.get_body_composition_measurements(table, extra_uid),
-                    )
+        for extra_uid in extra_user_ids or []:
+            for table in self.discover_user_tables(extra_uid):
+                # Same two-endpoint fallback as the main loop above: accounts
+                # that answer empty on the body composition endpoint still have
+                # their rows on the legacy one.
+                measurements = self.get_body_composition_measurements(table, extra_uid)
+                if not measurements:
+                    measurements = self.get_measurements(table, extra_uid)
+                collect(table, extra_uid, measurements)
 
         all_measurements.sort(
             key=lambda m: m.get("timeStamp", 0) or 0,

@@ -20,16 +20,19 @@ ENDPOINTS = {
     "girth_upload": "RenphoHealth/renpho/girth/uploadGirthsDataV2",
 }
 
-# Body composition scales are believed to shard measurements across 16 tables.
-# Server-side discovery only reports the table for the logged-in user, so the
-# only way to find data belonging to other linked accounts is to probe.
+# Measurements are sharded across 24 tables, ``measurements_info_0`` through
+# ``measurements_info_23``, and a user's rows live in the shard given by
+# ``user_id % 24``. ``device/count`` only reports the table for the logged-in
+# user, so this is how you locate any other linked account's data.
 #
-# INFERRED, NOT DOCUMENTED: the 16-table range and the ``measurements_info_<hex>``
-# naming come from observed accounts, so an account whose tables are named
-# differently would probe empty. ``get_all_measurements()`` therefore probes the
-# table names ``device/count`` actually reported before falling back to these,
-# and ``discover_user_tables(..., tables=[...])`` takes an explicit list.
-MEASUREMENT_TABLE_NAMES = [f"measurements_info_{i:X}" for i in range(16)]
+# Verified against a live account: tables 0-23 all respond and 24+ do not, three
+# separate user ids each resolved to exactly ``user_id % 24``, and the
+# hex-suffixed names an earlier revision generated (``measurements_info_A`` …
+# ``_F``) do not exist. The suffix is decimal, not hex.
+MEASUREMENT_TABLE_SHARDS = 24
+MEASUREMENT_TABLE_NAMES = [
+    f"measurements_info_{i}" for i in range(MEASUREMENT_TABLE_SHARDS)
+]
 
 # Body weight scale device types
 BODY_WEIGHT_SCALES = [

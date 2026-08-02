@@ -110,9 +110,23 @@ measurements = client.get_all_measurements(
 )
 ```
 
-The library will probe every measurement table for that user ID, fetch
-matching records, and dedupe by record `id` so you get a single combined
-timeline.
+The library locates that user's rows, fetches them, and dedupes by
+`(table, id)` so you get a single combined timeline.
+
+**How the lookup works.** Measurements are sharded across 24 tables,
+`measurements_info_0` through `measurements_info_23`, and a user's rows live in
+`measurements_info_<user_id % 24>`. `device/count` only names the table for the
+account you logged in to, so any other account's table is computed instead:
+
+```python
+RenphoClient.measurement_table_for(6000380382810832768)
+# -> 'measurements_info_16'
+```
+
+That's normally a single lookup; only if the computed shard comes back empty
+does the library sweep the remaining 23. Each check tries the body-composition
+endpoint and then the legacy one, because some accounts answer empty on the
+former while holding all their rows on the latter.
 
 **How to find your other user ID:**
 
