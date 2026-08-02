@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import requests
+
 try:
     from dotenv import load_dotenv
 
@@ -11,8 +13,8 @@ try:
 except ImportError:
     pass
 
-from .client import RenphoClient
-from .export import format_measurement, save_csv, save_json
+from .client import RenphoAPIError, RenphoClient
+from .export import format_girth, format_measurement, save_csv, save_json
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -78,32 +80,55 @@ def main(argv: list[str] | None = None) -> None:
         measurements = client.get_measurements(table_name, uid, count)
         all_measurements.extend(measurements)
 
-    if not all_measurements:
-        print("\nNo measurements found.")
+    if all_measurements:
+        # Sort newest first
+        all_measurements.sort(
+            key=lambda m: m.get("timeStamp", 0) or 0,
+            reverse=True,
+        )
+
+        print(f"\nTotal: {len(all_measurements)} measurement(s)")
+
+        # Display most recent 5
+        for i, m in enumerate(all_measurements[:5]):
+            print(f"\n{'=' * 55}")
+            print(f"  Measurement #{i + 1}")
+            print(f"{'=' * 55}")
+            print(format_measurement(m))
+
+        if len(all_measurements) > 5:
+            print(f"\n  ... and {len(all_measurements) - 5} more")
+
+        # Save data
+        save_json(all_measurements, output_dir / "measurements.json")
+        save_csv(all_measurements, output_dir / "measurements.csv")
+    else:
+        print("\nNo scale measurements found.")
         print("  Try setting RENPHO_DEBUG=1 to see API responses.")
-        return
 
-    # Sort newest first
-    all_measurements.sort(
-        key=lambda m: m.get("timeStamp", 0) or 0,
-        reverse=True,
-    )
+    # Step 4: Girth (tape-measure) data
+    print("\nFetching girth (tape-measure) data...")
+    # Scale data is already saved at this point — an account without a tape
+    # measure must not turn into a failed run.
+    try:
+        girth = client.get_girth_measurements()
+    except (RenphoAPIError, requests.RequestException) as e:
+        print(f"  Girth fetch failed: {e}")
+        girth = []
 
-    print(f"\nTotal: {len(all_measurements)} measurement(s)")
-
-    # Display most recent 5
-    for i, m in enumerate(all_measurements[:5]):
-        print(f"\n{'=' * 55}")
-        print(f"  Measurement #{i + 1}")
-        print(f"{'=' * 55}")
-        print(format_measurement(m))
-
-    if len(all_measurements) > 5:
-        print(f"\n  ... and {len(all_measurements) - 5} more")
-
-    # Save data
-    save_json(all_measurements, output_dir / "measurements.json")
-    save_csv(all_measurements, output_dir / "measurements.csv")
+    if girth:
+        print(f"Total: {len(girth)} girth record(s)")
+        for i, g in enumerate(girth[:3]):
+            print(f"\n{'=' * 55}")
+            print(f"  Girth #{i + 1}")
+            print(f"{'=' * 55}")
+            print(format_girth(g))
+        if len(girth) > 3:
+            print(f"\n  ... and {len(girth) - 3} more")
+        save_json(girth, output_dir / "girth.json")
+        save_csv(girth, output_dir / "girth.csv")
+    else:
+        print("  No girth records found.")
 
     if client.user_info:
         save_json(client.user_info, output_dir / "user_profile.json")

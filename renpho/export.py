@@ -4,7 +4,7 @@ import datetime
 import json
 from pathlib import Path
 
-from .constants import METRICS
+from .constants import GIRTH_METRICS, METRICS
 
 
 def format_timestamp(ts) -> str:
@@ -30,6 +30,24 @@ def format_measurement(m: dict) -> str:
         lines.append(f"  Scale: {scale}")
 
     for key, label, unit in METRICS:
+        value = m.get(key)
+        if value is not None and value != 0 and value != 0.0:
+            unit_str = f" {unit}" if unit else ""
+            lines.append(f"  {label:<22} {value}{unit_str}")
+
+    return "\n".join(lines)
+
+
+def format_girth(m: dict) -> str:
+    """Return a human-readable string for a single girth (tape-measure) record."""
+    ts = m.get("timeStamp") or m.get("time_stamp")
+    device = m.get("scaleName", "")
+
+    lines = [f"  Date: {format_timestamp(ts)}"]
+    if device:
+        lines.append(f"  Device: {device}")
+
+    for key, label, unit in GIRTH_METRICS:
         value = m.get(key)
         if value is not None and value != 0 and value != 0.0:
             unit_str = f" {unit}" if unit else ""
@@ -69,9 +87,12 @@ def save_csv(measurements: list[dict], filepath: str | Path) -> Path | None:
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
+    # Girth keys are listed too so girth exports get the same useful-first
+    # ordering; keys absent from the data are dropped below either way.
     priority = [
         "timeStamp", "localCreatedAt",
         *(key for key, _, _ in METRICS),
+        *(key for key, _, _ in GIRTH_METRICS),
         "scaleName", "height", "gender",
     ]
 

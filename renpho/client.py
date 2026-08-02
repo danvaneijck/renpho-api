@@ -10,8 +10,12 @@ from .constants import (
     APP_VERSION,
     BODY_WEIGHT_SCALES,
     ENDPOINTS,
+    GIRTH_WRITE_PLATFORM,
+    MEASUREMENT_TABLE_NAMES,
+    MEASUREMENT_TABLE_SHARDS,
     PLATFORM,
     SUCCESS_CODES,
+    SYSTEM_VERSION,
 )
 from .crypto import (
     decrypt_response,
@@ -63,8 +67,24 @@ class RenphoClient:
 
     # ----- internal helpers -----
 
-    def _post(self, endpoint: str, body: dict, *, auth: bool = True) -> dict:
-        """Make an encrypted POST request to the Renpho API."""
+    def _post(
+        self,
+        endpoint: str,
+        body: dict,
+        *,
+        auth: bool = True,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict:
+        """Make an encrypted POST request to the Renpho API.
+
+        Args:
+            endpoint: Endpoint path (from :data:`~renpho.constants.ENDPOINTS`).
+            body: Already-encrypted request body (``{"encryptData": ...}``).
+            auth: Attach the standard auth headers (token/userId/...).
+            extra_headers: Additional headers merged on top of the auth headers.
+                Some endpoints (e.g. the girth upload) require a fuller header
+                set than the default reads.
+        """
         url = f"{API_BASE_URL}/{endpoint}"
         headers: dict[str, str] = {}
         if auth and self.token:
@@ -72,6 +92,8 @@ class RenphoClient:
             headers["userId"] = str(self.user_id)
             headers["appVersion"] = APP_VERSION
             headers["platform"] = PLATFORM
+        if extra_headers:
+            headers.update(extra_headers)
 
         if self.debug:
             print(f"  POST {url}")
@@ -165,14 +187,21 @@ class RenphoClient:
         return data
 
     def get_measurements(
-        self, table_name: str, user_id, total_count: int, *, page_size: int = 50
+        self,
+        table_name: str,
+        user_id,
+        total_count: int | None = None,
+        *,
+        page_size: int = 50,
     ) -> list[dict]:
         """Fetch measurements from a specific scale table with pagination.
 
         Args:
             table_name: Dynamic table name from :meth:`get_device_info`.
             user_id: The user ID to query for.
-            total_count: Total records available (from device info).
+            total_count: Total records available (from device info). Pass None
+                when it is not known — pagination then runs until the server
+                stops returning full pages.
             page_size: Records per page (default 50).
 
         Returns:
@@ -181,7 +210,7 @@ class RenphoClient:
         all_measurements: list[dict] = []
         page = 1
 
-        while len(all_measurements) < total_count:
+        while total_count is None or len(all_measurements) < total_count:
             request_data = {
                 "pageNum": page,
                 "pageSize": page_size,
@@ -212,6 +241,10 @@ class RenphoClient:
                 break
 
             all_measurements.extend(records)
+            # Without a total to bound the loop, a short page is the only
+            # signal that the last one has been read.
+            if total_count is None and len(records) < page_size:
+                break
             page += 1
 
         return all_measurements
@@ -277,7 +310,147 @@ class RenphoClient:
 
         return all_measurements
 
-    def get_all_measurements(self) -> list[dict]:
+    @staticmethod
+    def measurement_table_for(user_id) -> str | None:
+        """The shard table holding *user_id*'s measurements, or None if underivable.
+
+        Measurements are sharded across
+        :data:`~renpho.constants.MEASUREMENT_TABLE_SHARDS` tables by
+        ``user_id % 24``, so the table can be computed rather than searched for.
+        """
+        try:
+            return f"measurements_info_{int(user_id) % MEASUREMENT_TABLE_SHARDS}"
+        except (TypeError, ValueError):
+            return None
+
+    def _table_has_records(self, table: str, user_id) -> bool:
+        """True if *table* holds at least one record for *user_id*."""
+        encrypted_body = encrypt_request({
+            "pageNum": 1,
+            "pageSize": 1,
+            "userIds": [str(user_id)],
+            "tableName": table,
+        })
+        # Not every account answers on the body composition endpoint — some
+        # return an empty list there while the legacy endpoint has the rows —
+        # so a miss on the first is not proof the table is empty.
+        for endpoint in ("body_composition_measurements", "measurements"):
+            # A table that does not exist is an expected miss, not an error:
+            # keep going rather than aborting the whole sweep.
+            try:
+                result = self._post(ENDPOINTS[endpoint], encrypted_body)
+            except requests.exceptions.HTTPError as e:
+                if self.debug:
+                    print(f"  Probe {table} via {endpoint} failed ({e}), skipping")
+                continue
+            if not result.get("data"):
+                continue
+            if self._extract_records(decrypt_response(result["data"])):
+                return True
+        return False
+
+    def discover_user_tables(self, user_id, *, tables: list | None = None) -> list[str]:
+        """Find the measurement tables holding data for *user_id*.
+
+        The server only reports the table for the logged-in user via
+        ``device/count``, so for any other linked account the table has to be
+        located here.
+
+        The shard is derivable — ``measurements_info_<user_id % 24>`` — so by
+        default that table is checked first and the remaining shards are only
+        swept if it comes back empty. Pass *tables* to check an explicit list
+        instead; :meth:`get_all_measurements` seeds it with the table names
+        ``device/count`` actually reported, which are authoritative.
+
+        Args:
+            user_id: The user ID to look for.
+            tables: Candidate table names. Defaults to the computed shard first,
+                then the remaining shards.
+
+        Returns:
+            List of table names that contain at least one record for ``user_id``.
+        """
+        if tables is None:
+            candidates = list(MEASUREMENT_TABLE_NAMES)
+            shard = self.measurement_table_for(user_id)
+            if shard in candidates:
+                # cheap path: the computed shard is almost always the only hit
+                candidates.remove(shard)
+                candidates.insert(0, shard)
+                if self._table_has_records(shard, user_id):
+                    return [shard]
+                candidates = candidates[1:]
+        else:
+            candidates = list(tables)
+
+        found = [t for t in candidates if self._table_has_records(t, user_id)]
+        if not found and self.debug:
+            print(
+                f"  No table held data for user {user_id} "
+                f"(checked {len(candidates)}). If this account definitely has "
+                f"measurements, pass tables=[...] explicitly."
+            )
+        return found
+
+    def get_girth_measurements(self, *, page_size: int = 100) -> list[dict]:
+        """Fetch body girth (tape-measure) measurements.
+
+        Girth data comes from Renpho smart tape measures (e.g. the R-Y002) and
+        lives under a separate endpoint from scale data
+        (``RenphoHealth/renpho/girth/queryAllGirthsDataList``). The
+        authenticated user is identified by the request headers, so unlike the
+        scale endpoints this call needs no table name or user id. Paginates
+        until the server returns an empty page.
+
+        Each record contains ``*Value``/``*Unit`` pairs for neck, shoulder,
+        chest, waist, abdomen and hip, plus overall and left/right arm, thigh
+        and calf, a computed ``whrValue`` (waist-to-hip ratio) and up to five
+        user-defined ``custom`` slots. Unmeasured fields are returned as ``0``.
+
+        Calls :meth:`login` first if no token is set.
+
+        Args:
+            page_size: Records per page (default 100).
+
+        Returns:
+            List of girth measurement dicts sorted by timestamp (newest first).
+        """
+        if not self.token:
+            self.login()
+
+        all_measurements: list[dict] = []
+        page = 1
+
+        while True:
+            request_data = {"pageNum": page, "pageSize": page_size}
+
+            if self.debug:
+                print(f"  Girth page {page} (got {len(all_measurements)} so far)...")
+
+            encrypted_body = encrypt_request(request_data)
+            result = self._post(ENDPOINTS["girth_measurements"], encrypted_body)
+            _check_response(result, f"GirthMeasurements page {page}")
+
+            if not result.get("data"):
+                break
+
+            page_data = decrypt_response(result["data"])
+            records = self._extract_records(page_data)
+            if not records:
+                break
+
+            all_measurements.extend(records)
+            if len(records) < page_size:
+                break
+            page += 1
+
+        all_measurements.sort(
+            key=lambda m: m.get("timeStamp", 0) or 0,
+            reverse=True,
+        )
+        return all_measurements
+
+    def get_all_measurements(self, extra_user_ids: list | None = None) -> list[dict]:
         """High-level helper: fetch device info then pull all measurements.
 
         Tries the body composition endpoint first (used by impedance scales).
@@ -287,8 +460,19 @@ class RenphoClient:
 
         Calls :meth:`login` first if no token is set.
 
+        Args:
+            extra_user_ids: Additional user IDs to fetch measurements for. The
+                Renpho API allows a logged-in user to read measurements belonging
+                to other linked accounts (e.g. a separate account from before a
+                Google SSO migration). Each id is probed against all known
+                measurement tables. Pass these when you have multiple Renpho
+                accounts associated with the same physical scale.
+
         Returns:
-            List of measurement dicts sorted by timestamp (newest first).
+            List of measurement dicts sorted by timestamp (newest first). When
+            *extra_user_ids* is used, records are deduped by ``(table, id)`` —
+            the same table can be reached both from device info and from
+            probing, but row ids are only unique within a table.
         """
         if not self.token:
             self.login()
@@ -296,7 +480,20 @@ class RenphoClient:
         device_info = self.get_device_info()
         scales = device_info.get("scale", [])
 
+        fetched: set = set()
         all_measurements: list[dict] = []
+
+        def collect(table_name, uid, records):
+            """Add *records*, skipping rows already seen from the same table."""
+            for m in records:
+                rid = m.get("id")
+                key = (table_name, rid)
+                if rid is not None:
+                    if key in fetched:
+                        continue
+                    fetched.add(key)
+                all_measurements.append(m)
+
         for scale in scales:
             table_name = scale.get("tableName")
             count = scale.get("count", 0)
@@ -315,13 +512,102 @@ class RenphoClient:
             if not measurements and count > 0:
                 measurements = self.get_measurements(table_name, uid, count)
 
-            all_measurements.extend(measurements)
+            collect(table_name, uid, measurements)
+
+        for extra_uid in extra_user_ids or []:
+            for table in self.discover_user_tables(extra_uid):
+                # Same two-endpoint fallback as the main loop above: accounts
+                # that answer empty on the body composition endpoint still have
+                # their rows on the legacy one.
+                measurements = self.get_body_composition_measurements(table, extra_uid)
+                if not measurements:
+                    measurements = self.get_measurements(table, extra_uid)
+                collect(table, extra_uid, measurements)
 
         all_measurements.sort(
             key=lambda m: m.get("timeStamp", 0) or 0,
             reverse=True,
         )
         return all_measurements
+
+    # ----- tape measure (body girth) writes -----
+
+    def _girth_write_headers(
+        self, time_zone: str, zone_id: str, device_id: str, platform: str
+    ) -> dict[str, str]:
+        """The fuller header set the app sends on girth WRITE calls.
+
+        The upload endpoint returns HTTP 400 (``Missing request header
+        'timeZone'``) unless these are present; the read endpoints do not need
+        them. ``time_zone`` is the short form (e.g. ``"-5"``), NOT ``"-5:00"``.
+
+        *platform* defaults to the captured iOS value rather than the
+        library-wide ``PLATFORM`` — see
+        :data:`~renpho.constants.GIRTH_WRITE_PLATFORM` for why.
+        """
+        return {
+            "userid": str(self.user_id),
+            "platform": platform,
+            "timezone": time_zone,
+            "zoneid": zone_id,
+            "appversion": APP_VERSION,
+            "systemversion": SYSTEM_VERSION,
+            "language": "en",
+            "languagecode": "en",
+            "area": "US",
+            "userarea": "US",
+            "phone": "python-client",
+            "devid": device_id,
+        }
+
+    def upload_girth_measurements(
+        self,
+        records: list[dict],
+        *,
+        time_zone: str = "+0",
+        zone_id: str = "UTC",
+        device_id: str = "renpho-api-python",
+        platform: str = GIRTH_WRITE_PLATFORM,
+    ) -> list[dict]:
+        """Upload (append) girth records via ``uploadGirthsDataV2``.
+
+        Build *records* with :func:`renpho.girth.build_girth_record`. The
+        endpoint only **adds** — there is no in-place replace, so re-uploading an
+        existing date creates a second entry on the server.
+
+        The server does not recalculate ``whrValue`` (waist-to-hip ratio) for
+        records written outside the app, so uploaded entries have no WHR.
+
+        Calls :meth:`login` first if no token is set.
+
+        Args:
+            records: List of records from :func:`renpho.girth.build_girth_record`.
+            time_zone: Short-form offset header (e.g. ``"-5"``, NOT ``"-5:00"``).
+            zone_id: IANA zone id header (e.g. ``"America/New_York"``).
+            device_id: Device identifier header value.
+            platform: ``platform`` header. Defaults to the captured iOS value,
+                the only one verified against a live account — see
+                :data:`~renpho.constants.GIRTH_WRITE_PLATFORM`.
+
+        Returns:
+            The server acknowledgements (a list of ``{id, timeStamp}`` dicts).
+
+        Raises:
+            RenphoAPIError: On API-level failure.
+        """
+        if not self.token:
+            self.login()
+
+        encrypted_body = encrypt_request(records)
+        headers = self._girth_write_headers(time_zone, zone_id, device_id, platform)
+        result = self._post(
+            ENDPOINTS["girth_upload"], encrypted_body, extra_headers=headers
+        )
+        _check_response(result, "UploadGirths")
+
+        if not result.get("data"):
+            return []
+        return decrypt_response(result["data"])
 
     @staticmethod
     def _extract_records(page_data) -> list[dict] | None:
@@ -334,7 +620,7 @@ class RenphoClient:
                 if key in page_data and isinstance(page_data[key], list):
                     return page_data[key] if page_data[key] else None
 
-            if "weight" in page_data:
+            if "weight" in page_data or "neckValue" in page_data:
                 return [page_data]
 
         return None
