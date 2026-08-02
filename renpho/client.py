@@ -309,6 +309,64 @@ class RenphoClient:
                 found.append(table)
         return found
 
+    def get_girth_measurements(self, *, page_size: int = 100) -> list[dict]:
+        """Fetch body girth (tape-measure) measurements.
+
+        Girth data comes from Renpho smart tape measures (e.g. the R-Y002) and
+        lives under a separate endpoint from scale data
+        (``RenphoHealth/renpho/girth/queryAllGirthsDataList``). The
+        authenticated user is identified by the request headers, so unlike the
+        scale endpoints this call needs no table name or user id. Paginates
+        until the server returns an empty page.
+
+        Each record contains ``*Value``/``*Unit`` pairs for neck, shoulder,
+        chest, waist, abdomen and hip, plus overall and left/right arm, thigh
+        and calf, a computed ``whrValue`` (waist-to-hip ratio) and up to five
+        user-defined ``custom`` slots. Unmeasured fields are returned as ``0``.
+
+        Calls :meth:`login` first if no token is set.
+
+        Args:
+            page_size: Records per page (default 100).
+
+        Returns:
+            List of girth measurement dicts sorted by timestamp (newest first).
+        """
+        if not self.token:
+            self.login()
+
+        all_measurements: list[dict] = []
+        page = 1
+
+        while True:
+            request_data = {"pageNum": page, "pageSize": page_size}
+
+            if self.debug:
+                print(f"  Girth page {page} (got {len(all_measurements)} so far)...")
+
+            encrypted_body = encrypt_request(request_data)
+            result = self._post(ENDPOINTS["girth_measurements"], encrypted_body)
+            _check_response(result, f"GirthMeasurements page {page}")
+
+            if not result.get("data"):
+                break
+
+            page_data = decrypt_response(result["data"])
+            records = self._extract_records(page_data)
+            if not records:
+                break
+
+            all_measurements.extend(records)
+            if len(records) < page_size:
+                break
+            page += 1
+
+        all_measurements.sort(
+            key=lambda m: m.get("timeStamp", 0) or 0,
+            reverse=True,
+        )
+        return all_measurements
+
     def get_all_measurements(self, extra_user_ids: list | None = None) -> list[dict]:
         """High-level helper: fetch device info then pull all measurements.
 
@@ -392,7 +450,7 @@ class RenphoClient:
                 if key in page_data and isinstance(page_data[key], list):
                     return page_data[key] if page_data[key] else None
 
-            if "weight" in page_data:
+            if "weight" in page_data or "neckValue" in page_data:
                 return [page_data]
 
         return None

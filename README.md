@@ -4,7 +4,7 @@
 [![CI](https://github.com/danvaneijck/renpho-api/actions/workflows/ci.yml/badge.svg)](https://github.com/danvaneijck/renpho-api/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/pypi/pyversions/renpho-api)](https://pypi.org/project/renpho-api/)
 
-Unofficial Python client for the Renpho Health API. Pull body composition measurements from Renpho smart scales programmatically.
+Unofficial Python client for the Renpho Health API. Pull body composition measurements from Renpho smart scales and measuring tapes programmatically.
 
 Based on reverse-engineering from [RenphoGarminSync-CLI](https://github.com/forkerer/RenphoGarminSync-CLI).
 
@@ -131,6 +131,28 @@ independent even when emails collide. Options:
 
 Once you have the ID, save it alongside your credentials and you won't
 need to discover it again.
+### Girth (tape-measure) data
+
+Body circumference measurements from Renpho smart tape measures (e.g. the
+R-Y002) are stored separately from scale data and are fetched with a dedicated
+method:
+
+```python
+from renpho import RenphoClient, save_json, save_csv
+
+client = RenphoClient("user@example.com", "password")
+
+girth = client.get_girth_measurements()  # logs in automatically if needed
+
+for g in girth:
+    print(g["waistValue"], g["hipValue"], g.get("chestValue"))
+
+save_json(girth, "girth.json")
+save_csv(girth, "girth.csv")
+```
+
+The `renpho` CLI also fetches girth data automatically, saving it to
+`girth.json` / `girth.csv` alongside the scale exports.
 
 ### Error handling
 
@@ -166,6 +188,25 @@ Each measurement dict can contain these fields (availability depends on your sca
 | `heartRate` | Heart Rate | bpm |
 | `cardiacIndex` | Cardiac Index | |
 | `bodyShape` | Body Shape | |
+
+### Girth metrics
+
+Records from `get_girth_measurements()` contain these fields (each with a
+paired `*Unit`, where `0` = cm). Unmeasured fields are returned as `0`.
+
+| Key | Description | Unit |
+| --- | --- | --- |
+| `neckValue` | Neck | cm |
+| `shoulderValue` | Shoulder | cm |
+| `chestValue` | Chest | cm |
+| `waistValue` | Waist | cm |
+| `abdomenValue` | Abdomen | cm |
+| `hipValue` | Hip | cm |
+| `armValue` / `leftArmValue` / `rightArmValue` | Arm | cm |
+| `thighValue` / `leftThighValue` / `rightThighValue` | Thigh | cm |
+| `calfValue` / `leftCalfValue` / `rightCalfValue` | Calf | cm |
+| `whrValue` | Waist-to-hip ratio | |
+| `customValue`, `customValue1`…`customValue5` | User-defined measurements | cm |
 
 ## Project Structure
 

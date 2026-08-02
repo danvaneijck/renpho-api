@@ -45,6 +45,10 @@ class TestExtractRecords:
         data = {"weight": 70, "bmi": 22}
         assert RenphoClient._extract_records(data) == [data]
 
+    def test_single_girth_dict(self):
+        data = {"neckValue": 40.0, "waistValue": 90.0}
+        assert RenphoClient._extract_records(data) == [data]
+
     def test_unknown_dict(self):
         data = {"foo": "bar"}
         assert RenphoClient._extract_records(data) is None
@@ -101,6 +105,56 @@ class TestGetBodyCompositionMeasurements:
         client = self._make_client()
         with patch.object(client, "_post", return_value={"code": 101, "msg": "success", "data": None}):
             result = client.get_body_composition_measurements("measurements_info_0", 123)
+        assert result == []
+
+
+class TestGetGirthMeasurements:
+    def _make_client(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "tok"
+        client.user_id = 123
+        return client
+
+    def _encrypted_records(self, records):
+        from renpho.crypto import encrypt_request
+        return {"code": 101, "msg": "success", "data": encrypt_request(records)["encryptData"]}
+
+    def test_returns_records_single_page(self):
+        client = self._make_client()
+        records = [{"neckValue": 40.0, "waistValue": 90.0, "timeStamp": 1000}]
+        with patch.object(client, "_post", return_value=self._encrypted_records(records)):
+            result = client.get_girth_measurements()
+        assert result == records
+
+    def test_sorts_newest_first(self):
+        client = self._make_client()
+        records = [
+            {"waistValue": 90.0, "timeStamp": 1000},
+            {"waistValue": 88.0, "timeStamp": 3000},
+            {"waistValue": 89.0, "timeStamp": 2000},
+        ]
+        with patch.object(client, "_post", return_value=self._encrypted_records(records)):
+            result = client.get_girth_measurements()
+        assert [r["timeStamp"] for r in result] == [3000, 2000, 1000]
+
+    def test_paginates_until_short_page(self):
+        client = self._make_client()
+        page1 = [{"waistValue": float(i), "timeStamp": i} for i in range(100)]
+        page2 = [{"waistValue": 99.0, "timeStamp": 9999}]
+        responses = [
+            self._encrypted_records(page1),
+            self._encrypted_records(page2),
+        ]
+        with patch.object(client, "_post", side_effect=responses):
+            result = client.get_girth_measurements()
+        assert len(result) == 101
+
+    def test_returns_empty_when_no_data(self):
+        client = self._make_client()
+        with patch.object(
+            client, "_post", return_value={"code": 101, "msg": "success", "data": None}
+        ):
+            result = client.get_girth_measurements()
         assert result == []
 
 

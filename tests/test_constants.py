@@ -5,6 +5,7 @@ from renpho.constants import (
     BODY_WEIGHT_SCALES,
     ENCRYPTION_KEY,
     ENDPOINTS,
+    GIRTH_METRICS,
     METRICS,
 )
 
@@ -25,6 +26,7 @@ def test_endpoints_all_present():
         "family",
         "measurements",
         "body_composition_measurements",
+        "girth_measurements",
     }
     assert required.issubset(ENDPOINTS.keys())
 
@@ -35,6 +37,14 @@ def test_body_weight_scales_nonempty():
 
 def test_metrics_structure():
     for key, label, unit in METRICS:
+        assert isinstance(key, str)
+        assert isinstance(label, str)
+        assert isinstance(unit, str)
+
+
+def test_girth_metrics_structure():
+    assert len(GIRTH_METRICS) > 0
+    for key, label, unit in GIRTH_METRICS:
         assert isinstance(key, str)
         assert isinstance(label, str)
         assert isinstance(unit, str)
