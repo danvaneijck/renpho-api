@@ -4,10 +4,11 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from renpho.client import RenphoAPIError, RenphoClient, _check_response
-from renpho.constants import SUCCESS_CODES
-from renpho.crypto import encrypt_request
+from renpho.constants import MEASUREMENT_TABLE_NAMES, SUCCESS_CODES
+from renpho.crypto import aes_decrypt, encrypt_request
 
 
 class TestCheckResponse:
@@ -198,3 +199,140 @@ class TestGetAllMeasurementsCountZero:
             result = client.get_all_measurements()
         mock_get.assert_called_once_with("measurements_info_8", 123, 5)
         assert result == records
+
+
+class TestDiscoverUserTables:
+    """Probing measurement tables for an account device info does not report."""
+
+    def _make_client(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "tok"
+        client.user_id = 123
+        return client
+
+    def _encrypted(self, records):
+        return {
+            "code": 101,
+            "msg": "success",
+            "data": encrypt_request(records)["encryptData"],
+        }
+
+    def test_returns_only_tables_with_records(self):
+        client = self._make_client()
+        hit = "measurements_info_3"
+
+        def fake_post(endpoint, body, **kwargs):
+            decoded = json.loads(aes_decrypt(body["encryptData"]))
+            if decoded["tableName"] == hit:
+                return self._encrypted([{"id": 1, "weight": 70.0}])
+            return {"code": 101, "msg": "success", "data": None}
+
+        with patch.object(client, "_post", side_effect=fake_post):
+            assert client.discover_user_tables("999") == [hit]
+
+    def test_probes_every_table(self):
+        client = self._make_client()
+        with patch.object(
+            client, "_post", return_value={"code": 101, "msg": "success", "data": None}
+        ) as mock_post:
+            assert client.discover_user_tables("999") == []
+        assert mock_post.call_count == len(MEASUREMENT_TABLE_NAMES)
+
+    def test_a_failing_probe_does_not_abort_discovery(self):
+        client = self._make_client()
+        calls = {"n": 0}
+
+        def fake_post(endpoint, body, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise requests.exceptions.HTTPError("500 boom")
+            return {"code": 101, "msg": "success", "data": None}
+
+        with patch.object(client, "_post", side_effect=fake_post):
+            assert client.discover_user_tables("999") == []
+        assert calls["n"] == len(MEASUREMENT_TABLE_NAMES)
+
+
+class TestGetAllMeasurementsExtraUsers:
+    """get_all_measurements(extra_user_ids=...) — multiple accounts on one email."""
+
+    def _make_client(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "tok"
+        client.user_id = 123
+        return client
+
+    def test_merges_records_from_an_extra_account(self):
+        client = self._make_client()
+        device_info = {
+            "scale": [{"tableName": "measurements_info_1", "count": 1, "userIds": [123]}]
+        }
+        mine = [{"id": 1, "weight": 70.0, "timeStamp": 1000}]
+        theirs = [{"id": 7, "weight": 80.0, "timeStamp": 2000}]
+
+        def by_table(table, uid, **kwargs):
+            return mine if table == "measurements_info_1" else theirs
+
+        with (
+            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_body_composition_measurements", side_effect=by_table),
+            patch.object(client, "discover_user_tables", return_value=["measurements_info_9"]),
+        ):
+            result = client.get_all_measurements(extra_user_ids=["999"])
+        # newest first, both accounts present
+        assert [m["id"] for m in result] == [7, 1]
+
+    def test_same_table_reached_twice_is_deduped(self):
+        client = self._make_client()
+        device_info = {
+            "scale": [{"tableName": "measurements_info_1", "count": 1, "userIds": [123]}]
+        }
+        records = [{"id": 1, "weight": 70.0, "timeStamp": 1000}]
+
+        with (
+            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_body_composition_measurements", return_value=records),
+            patch.object(client, "discover_user_tables", return_value=["measurements_info_1"]),
+        ):
+            result = client.get_all_measurements(extra_user_ids=["999"])
+        assert len(result) == 1
+
+    def test_matching_ids_in_different_tables_are_both_kept(self):
+        """Row ids are only unique within a table — these are distinct records."""
+        client = self._make_client()
+        device_info = {
+            "scale": [
+                {"tableName": "measurements_info_1", "count": 1, "userIds": [123]},
+                {"tableName": "measurements_info_2", "count": 1, "userIds": [123]},
+            ]
+        }
+        per_table = {
+            "measurements_info_1": [{"id": 1, "weight": 70.0, "timeStamp": 1000}],
+            "measurements_info_2": [{"id": 1, "weight": 80.0, "timeStamp": 2000}],
+        }
+
+        with (
+            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(
+                client,
+                "get_body_composition_measurements",
+                side_effect=lambda t, u, **k: per_table[t],
+            ),
+        ):
+            result = client.get_all_measurements()
+        assert len(result) == 2
+        assert {m["weight"] for m in result} == {70.0, 80.0}
+
+    def test_no_extra_ids_does_not_probe(self):
+        client = self._make_client()
+        device_info = {
+            "scale": [{"tableName": "measurements_info_1", "count": 1, "userIds": [123]}]
+        }
+        with (
+            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_body_composition_measurements", return_value=[]),
+            patch.object(client, "get_measurements", return_value=[]),
+            patch.object(client, "discover_user_tables") as mock_probe,
+        ):
+            client.get_all_measurements()
+        mock_probe.assert_not_called()

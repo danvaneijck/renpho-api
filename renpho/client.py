@@ -13,6 +13,7 @@ from .constants import (
     MEASUREMENT_TABLE_NAMES,
     PLATFORM,
     SUCCESS_CODES,
+    SYSTEM_VERSION,
 )
 from .crypto import (
     decrypt_response,
@@ -64,8 +65,24 @@ class RenphoClient:
 
     # ----- internal helpers -----
 
-    def _post(self, endpoint: str, body: dict, *, auth: bool = True) -> dict:
-        """Make an encrypted POST request to the Renpho API."""
+    def _post(
+        self,
+        endpoint: str,
+        body: dict,
+        *,
+        auth: bool = True,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict:
+        """Make an encrypted POST request to the Renpho API.
+
+        Args:
+            endpoint: Endpoint path (from :data:`~renpho.constants.ENDPOINTS`).
+            body: Already-encrypted request body (``{"encryptData": ...}``).
+            auth: Attach the standard auth headers (token/userId/...).
+            extra_headers: Additional headers merged on top of the auth headers.
+                Some endpoints (e.g. the girth upload) require a fuller header
+                set than the default reads.
+        """
         url = f"{API_BASE_URL}/{endpoint}"
         headers: dict[str, str] = {}
         if auth and self.token:
@@ -73,6 +90,8 @@ class RenphoClient:
             headers["userId"] = str(self.user_id)
             headers["appVersion"] = APP_VERSION
             headers["platform"] = PLATFORM
+        if extra_headers:
+            headers.update(extra_headers)
 
         if self.debug:
             print(f"  POST {url}")
@@ -286,6 +305,9 @@ class RenphoClient:
         only reports the table for the logged-in user via ``device/count``,
         so for any other linked account this method probes each suffix.
 
+        This costs one request per table, so call it only when you actually need
+        data for an account the server did not report.
+
         Args:
             user_id: The user ID to probe for.
 
@@ -300,7 +322,16 @@ class RenphoClient:
                 "userIds": [str(user_id)],
                 "tableName": table,
             })
-            result = self._post(ENDPOINTS["body_composition_measurements"], encrypted_body)
+            # A table that does not exist for this account is an expected miss,
+            # not an error — keep probing the rest rather than aborting.
+            try:
+                result = self._post(
+                    ENDPOINTS["body_composition_measurements"], encrypted_body
+                )
+            except requests.exceptions.HTTPError as e:
+                if self.debug:
+                    print(f"  Probe {table} failed ({e}), skipping")
+                continue
             if not result.get("data"):
                 continue
             page_data = decrypt_response(result["data"])
@@ -386,8 +417,10 @@ class RenphoClient:
                 accounts associated with the same physical scale.
 
         Returns:
-            List of measurement dicts sorted by timestamp (newest first),
-            deduped by record ``id``.
+            List of measurement dicts sorted by timestamp (newest first). When
+            *extra_user_ids* is used, records are deduped by ``(table, id)`` —
+            the same table can be reached both from device info and from
+            probing, but row ids are only unique within a table.
         """
         if not self.token:
             self.login()
@@ -395,7 +428,20 @@ class RenphoClient:
         device_info = self.get_device_info()
         scales = device_info.get("scale", [])
 
+        fetched: set = set()
         all_measurements: list[dict] = []
+
+        def collect(table_name, uid, records):
+            """Add *records*, skipping rows already seen from the same table."""
+            for m in records:
+                rid = m.get("id")
+                key = (table_name, rid)
+                if rid is not None:
+                    if key in fetched:
+                        continue
+                    fetched.add(key)
+                all_measurements.append(m)
+
         for scale in scales:
             table_name = scale.get("tableName")
             count = scale.get("count", 0)
@@ -414,30 +460,92 @@ class RenphoClient:
             if not measurements and count > 0:
                 measurements = self.get_measurements(table_name, uid, count)
 
-            all_measurements.extend(measurements)
+            collect(table_name, uid, measurements)
 
         for extra_uid in extra_user_ids or []:
             for table in self.discover_user_tables(extra_uid):
-                all_measurements.extend(
-                    self.get_body_composition_measurements(table, extra_uid)
+                collect(
+                    table,
+                    extra_uid,
+                    self.get_body_composition_measurements(table, extra_uid),
                 )
 
-        # Dedupe by record id (each measurement is a unique server-side row).
-        seen_ids: set = set()
-        unique: list[dict] = []
-        for m in all_measurements:
-            rid = m.get("id")
-            if rid is not None and rid in seen_ids:
-                continue
-            if rid is not None:
-                seen_ids.add(rid)
-            unique.append(m)
-
-        unique.sort(
+        all_measurements.sort(
             key=lambda m: m.get("timeStamp", 0) or 0,
             reverse=True,
         )
-        return unique
+        return all_measurements
+
+    # ----- tape measure (body girth) writes -----
+
+    def _girth_write_headers(
+        self, time_zone: str, zone_id: str, device_id: str
+    ) -> dict[str, str]:
+        """The fuller header set the app sends on girth WRITE calls.
+
+        The upload endpoint returns HTTP 400 (``Missing request header
+        'timeZone'``) unless these are present; the read endpoints do not need
+        them. ``time_zone`` is the short form (e.g. ``"-5"``), NOT ``"-5:00"``.
+        """
+        return {
+            "userid": str(self.user_id),
+            "platform": "ios",
+            "timezone": time_zone,
+            "zoneid": zone_id,
+            "appversion": APP_VERSION,
+            "systemversion": SYSTEM_VERSION,
+            "language": "en",
+            "languagecode": "en",
+            "area": "US",
+            "userarea": "US",
+            "phone": "python-client",
+            "devid": device_id,
+        }
+
+    def upload_girth_measurements(
+        self,
+        records: list[dict],
+        *,
+        time_zone: str = "+0",
+        zone_id: str = "UTC",
+        device_id: str = "renpho-api-python",
+    ) -> list[dict]:
+        """Upload (append) girth records via ``uploadGirthsDataV2``.
+
+        Build *records* with :func:`renpho.girth.build_girth_record`. The
+        endpoint only **adds** — there is no in-place replace, so re-uploading an
+        existing date creates a second entry on the server.
+
+        The server does not recalculate ``whrValue`` (waist-to-hip ratio) for
+        records written outside the app, so uploaded entries have no WHR.
+
+        Calls :meth:`login` first if no token is set.
+
+        Args:
+            records: List of records from :func:`renpho.girth.build_girth_record`.
+            time_zone: Short-form offset header (e.g. ``"-5"``, NOT ``"-5:00"``).
+            zone_id: IANA zone id header (e.g. ``"America/New_York"``).
+            device_id: Device identifier header value.
+
+        Returns:
+            The server acknowledgements (a list of ``{id, timeStamp}`` dicts).
+
+        Raises:
+            RenphoAPIError: On API-level failure.
+        """
+        if not self.token:
+            self.login()
+
+        encrypted_body = encrypt_request(records)
+        headers = self._girth_write_headers(time_zone, zone_id, device_id)
+        result = self._post(
+            ENDPOINTS["girth_upload"], encrypted_body, extra_headers=headers
+        )
+        _check_response(result, "UploadGirths")
+
+        if not result.get("data"):
+            return []
+        return decrypt_response(result["data"])
 
     @staticmethod
     def _extract_records(page_data) -> list[dict] | None:

@@ -5,6 +5,7 @@ API_BASE_URL = "https://cloud.renpho.com"
 ENCRYPTION_KEY = "ed*wijdi$h6fe3ew"  # 16-byte AES-128 key
 APP_VERSION = "6.6.0"
 PLATFORM = "android"
+SYSTEM_VERSION = "11"  # systemversion header value (mirrors the login systemType)
 
 # API endpoints (from RenphoApiEndpoints.cs)
 ENDPOINTS = {
@@ -14,8 +15,9 @@ ENDPOINTS = {
     "family": "RenphoHealth/centerUser/queryFamilyMemberList",
     "measurements": "RenphoHealth/scale/queryAllMeasureDataList",
     "body_composition_measurements": "RenphoHealth/scale/queryBodyCompositionMeasureData",
-    "body_composition_scale_count": "RenphoHealth/scale/bodyCompositionScaleCount",
+    # Smart Tape Measure (body girth) endpoints
     "girth_measurements": "RenphoHealth/renpho/girth/queryAllGirthsDataList",
+    "girth_upload": "RenphoHealth/renpho/girth/uploadGirthsDataV2",
 }
 
 # Body composition scales shard measurements across 16 tables. Server-side
@@ -70,6 +72,46 @@ GIRTH_METRICS = [
     ("leftCalfValue", "Left Calf", "cm"),
     ("rightCalfValue", "Right Calf", "cm"),
     ("whrValue", "Waist-to-Hip Ratio", ""),
+    ("customValue", "Custom", "cm"),
+    ("customValue1", "Custom 1", "cm"),
+    ("customValue2", "Custom 2", "cm"),
+    ("customValue3", "Custom 3", "cm"),
+    ("customValue4", "Custom 4", "cm"),
+    ("customValue5", "Custom 5", "cm"),
+]
+
+# Tape-measure girth sites: (api_field, site, unit). All circumferences are in
+# centimetres (the record's ``*Unit: 0`` confirms cm). "arm" = upper arm.
+#
+# A tape measure records either a single overall value (``armValue``) or the
+# bilateral pair (``leftArmValue``/``rightArmValue``) — whichever is unused
+# stays 0. Both forms are listed so a read never silently drops a site and
+# a write can target either.
+GIRTH_SITES = [
+    ("neckValue", "neck", "cm"),
+    ("shoulderValue", "shoulder", "cm"),
+    ("chestValue", "chest", "cm"),
+    ("waistValue", "waist", "cm"),
+    ("hipValue", "hip", "cm"),
+    ("abdomenValue", "abdomen", "cm"),
+    ("armValue", "arm", "cm"),
+    ("leftArmValue", "left_arm", "cm"),
+    ("rightArmValue", "right_arm", "cm"),
+    ("thighValue", "thigh", "cm"),
+    ("leftThighValue", "left_thigh", "cm"),
+    ("rightThighValue", "right_thigh", "cm"),
+    ("calfValue", "calf", "cm"),
+    ("leftCalfValue", "left_calf", "cm"),
+    ("rightCalfValue", "right_calf", "cm"),
+]
+
+# Every ``*Value`` field the upload endpoint expects (each paired with a matching
+# ``*Unit``). The writer defaults all of them to "0" and fills the measured sites.
+GIRTH_VALUE_FIELDS = [
+    "neckValue", "shoulderValue", "chestValue", "waistValue", "hipValue",
+    "abdomenValue", "armValue", "leftArmValue", "rightArmValue",
+    "thighValue", "leftThighValue", "rightThighValue",
+    "calfValue", "leftCalfValue", "rightCalfValue",
 ]
 
 # Success codes returned by the API

@@ -87,9 +87,12 @@ def save_csv(measurements: list[dict], filepath: str | Path) -> Path | None:
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
+    # Girth keys are listed too so girth exports get the same useful-first
+    # ordering; keys absent from the data are dropped below either way.
     priority = [
         "timeStamp", "localCreatedAt",
         *(key for key, _, _ in METRICS),
+        *(key for key, _, _ in GIRTH_METRICS),
         "scaleName", "height", "gender",
     ]
 

@@ -4,6 +4,8 @@ import os
 import sys
 from pathlib import Path
 
+import requests
+
 try:
     from dotenv import load_dotenv
 
@@ -106,9 +108,11 @@ def main(argv: list[str] | None = None) -> None:
 
     # Step 4: Girth (tape-measure) data
     print("\nFetching girth (tape-measure) data...")
+    # Scale data is already saved at this point — an account without a tape
+    # measure must not turn into a failed run.
     try:
         girth = client.get_girth_measurements()
-    except RenphoAPIError as e:
+    except (RenphoAPIError, requests.RequestException) as e:
         print(f"  Girth fetch failed: {e}")
         girth = []
 

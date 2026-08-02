@@ -131,29 +131,6 @@ independent even when emails collide. Options:
 
 Once you have the ID, save it alongside your credentials and you won't
 need to discover it again.
-### Girth (tape-measure) data
-
-Body circumference measurements from Renpho smart tape measures (e.g. the
-R-Y002) are stored separately from scale data and are fetched with a dedicated
-method:
-
-```python
-from renpho import RenphoClient, save_json, save_csv
-
-client = RenphoClient("user@example.com", "password")
-
-girth = client.get_girth_measurements()  # logs in automatically if needed
-
-for g in girth:
-    print(g["waistValue"], g["hipValue"], g.get("chestValue"))
-
-save_json(girth, "girth.json")
-save_csv(girth, "girth.csv")
-```
-
-The `renpho` CLI also fetches girth data automatically, saving it to
-`girth.json` / `girth.csv` alongside the scale exports.
-
 ### Error handling
 
 ```python
@@ -165,6 +142,85 @@ try:
 except RenphoAPIError as e:
     print(f"API error: {e}")
 ```
+
+## Smart Tape Measure (body girth)
+
+The Renpho Smart Tape Measure stores circumference measurements (waist, hip,
+arms, thighs, etc.) under a separate set of endpoints from the smart scale. The
+same login/token works for both. All circumferences are in **centimetres**.
+
+### Reading girths
+
+```python
+from renpho import RenphoClient, format_girth, normalize_girth, save_csv, save_json
+
+client = RenphoClient("user@example.com", "password")
+
+# Paginates through everything, newest first; logs in automatically if needed.
+girths = client.get_girth_measurements()
+
+for record in girths[:5]:
+    print(format_girth(record))
+
+save_json(girths, "girth.json")
+save_csv(girths, "girth.csv")
+
+# Or reduce a record to just the sites that were measured (zeros omitted):
+latest = normalize_girth(girths[0])
+# -> {"date": "2024-06-27", "waist": 90.0, "left_arm": 33.0, "hip": 100.0, "whr": 0.9, ...}
+```
+
+Records come back as raw API dicts (same convention as the scale methods) — see
+[Girth metrics](#girth-metrics) for the field names.
+
+`normalize_girth()` returns the local measurement `date` (from `timeStamp` +
+`timeZone`), each measured site in cm, and `whr` (waist/hip ratio) when present.
+A site that was not measured comes back as `0.0` and is omitted rather than
+reported as a real zero.
+
+**Site names** returned by `normalize_girth()` / accepted by
+`build_girth_record()`: `neck`, `shoulder`, `chest`, `waist`, `hip`, `abdomen`,
+`arm` / `left_arm` / `right_arm` (upper arm), `thigh` / `left_thigh` /
+`right_thigh`, `calf` / `left_calf` / `right_calf`. A tape measure records
+either the overall site or the left/right pair — whichever is unused stays `0`.
+
+The `renpho` CLI also fetches girth data automatically, saving it to
+`girth.json` / `girth.csv` alongside the scale exports.
+
+### Writing girths (backfill)
+
+`upload_girth_measurements()` appends historical measurements (useful for
+backfilling the app's history graph). The endpoint only **adds** — there is no
+in-place replace, so re-uploading an existing date creates a second entry.
+
+```python
+from renpho import RenphoClient, build_girth_record
+
+client = RenphoClient("user@example.com", "password")
+client.login()
+
+record = build_girth_record(
+    {"waist": 90.0, "left_arm": 33.0, "right_arm": 33.5},
+    user_id=client.user_id,
+    timestamp=1719500400,        # epoch seconds for the measurement
+    time_zone="-5:00",
+)
+
+acks = client.upload_girth_measurements(
+    [record],
+    time_zone="-5",                    # short form, NOT "-5:00"
+    zone_id="America/New_York",
+)
+# acks -> [{"id": <server id>, "timeStamp": 1719500400}]
+```
+
+> **Note:** the upload endpoint returns HTTP 400 (`Missing request header
+> 'timeZone'`) unless the fuller app header set is sent.
+> `upload_girth_measurements()` handles that for you — just pass `time_zone`
+> (short form) and `zone_id`.
+
+> **Note:** the server does not recalculate `whrValue` (waist-to-hip ratio) for
+> records written outside the app, so uploaded entries have no WHR.
 
 ## Available Metrics
 
@@ -218,9 +274,10 @@ renpho-api/
 │   ├── __init__.py       # Public API exports
 │   ├── client.py         # RenphoClient class
 │   ├── cli.py            # CLI entry point
-│   ├── constants.py      # API endpoints, device types, metrics
+│   ├── constants.py      # API endpoints, device types, metrics, girth sites
 │   ├── crypto.py         # AES encryption/decryption
-│   └── export.py         # JSON/CSV export helpers
+│   ├── export.py         # JSON/CSV export helpers
+│   └── girth.py          # Smart Tape Measure (body girth) helpers
 ├── tests/                # Unit tests
 └── .github/workflows/    # CI + PyPI release automation
 ```
