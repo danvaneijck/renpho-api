@@ -40,6 +40,9 @@ recent, and save everything to `renpho_data/` as JSON and CSV. If the account ha
 a smart tape measure it also writes `girth.json` / `girth.csv`; accounts without
 one simply report no girth records.
 
+Family members linked to the account are saved to `family_members.json`, and
+measurements are tagged with a `userName` field.
+
 ### Environment variables
 
 | Variable | Required | Description |
@@ -96,6 +99,24 @@ if not measurements:
 save_json(measurements, "my_data.json")
 save_csv(measurements, "my_data.csv")
 ```
+
+### Family members (sub-users)
+
+Profiles added under your account in the app (e.g. family members sharing a
+scale) can be listed with `get_family_members()`. The logged-in user is not part
+of that list; their own profile is in `client.user_info`.
+
+```python
+names = {str(client.user_id): client.user_info["accountName"]}
+for member in client.get_family_members():
+    names[str(member["id"])] = member["accountName"]
+
+# {'5981614576857776000': 'Alice', '5991064042346217344': 'Bob'}
+```
+
+Each entry is a full profile dict. Its `id` matches the `userIds` listed per
+scale in `get_device_info()` and the `bUserId` field on measurement records.
+Compare IDs as strings, since they arrive as both `int` and `str`.
 
 ### Multiple Renpho accounts on one email
 

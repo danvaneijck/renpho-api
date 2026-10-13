@@ -209,6 +209,33 @@ def _encrypted(records):
     }
 
 
+class TestGetFamilyMembers:
+    def test_returns_members(self):
+        client = RenphoClient("a@b.com", "p")
+        members = [{"id": 5991064042346217344, "accountName": "Kid"}]
+        with patch.object(client, "_post", return_value=_encrypted(members)) as mock_post:
+            assert client.get_family_members() == members
+        assert mock_post.call_args.args[0] == ENDPOINTS["family"]
+
+    def test_empty_data_returns_empty_list(self):
+        client = RenphoClient("a@b.com", "p")
+        with patch.object(client, "_post", return_value={"code": 101, "msg": "success", "data": None}):
+            assert client.get_family_members() == []
+
+    def test_falls_back_to_empty_object_body(self):
+        client = RenphoClient("a@b.com", "p")
+        members = [{"id": 1, "accountName": "Kid"}]
+        responses = [requests.exceptions.HTTPError("400"), _encrypted(members)]
+        with patch.object(client, "_post", side_effect=responses):
+            assert client.get_family_members() == members
+
+    def test_api_error_raises(self):
+        client = RenphoClient("a@b.com", "p")
+        with patch.object(client, "_post", return_value={"code": 500, "msg": "fail", "data": None}):
+            with pytest.raises(RenphoAPIError):
+                client.get_family_members()
+
+
 class TestMeasurementTableFor:
     """Rows live in measurements_info_<user_id % 24>, verified on a live account."""
 

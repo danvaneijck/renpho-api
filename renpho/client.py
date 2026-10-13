@@ -109,6 +109,30 @@ class RenphoClient:
         resp.raise_for_status()
         return resp.json()
 
+    def _post_empty(self, endpoint: str, context: str):
+        """POST an empty encrypted body and return the decrypted ``data``.
+
+        Tries the empty-bytes body first and falls back to an empty object,
+        since endpoints differ in which one they accept.
+        """
+        for attempt, body_fn in enumerate([encrypt_empty_bytes, encrypt_empty_object]):
+            try:
+                result = self._post(endpoint, body_fn())
+                break
+            except requests.exceptions.HTTPError as e:
+                if attempt == 0:
+                    if self.debug:
+                        print(
+                            f"  Attempt 1 failed ({e}), retrying with empty object..."
+                        )
+                    continue
+                raise
+
+        _check_response(result, context)
+        if not result.get("data"):
+            return None
+        return decrypt_response(result["data"])
+
     # ----- public API -----
 
     def login(self) -> dict:
@@ -164,27 +188,26 @@ class RenphoClient:
         Raises:
             RenphoAPIError: On API-level failure.
         """
-        for attempt, body_fn in enumerate([encrypt_empty_bytes, encrypt_empty_object]):
-            encrypted_body = body_fn()
-            try:
-                result = self._post(ENDPOINTS["device_info"], encrypted_body)
-                break
-            except requests.exceptions.HTTPError as e:
-                if attempt == 0:
-                    if self.debug:
-                        print(
-                            f"  Attempt 1 failed ({e}), retrying with empty object..."
-                        )
-                    continue
-                raise
-
-        _check_response(result, "GetDeviceInfo")
-        data = decrypt_response(result["data"])
+        data = self._post_empty(ENDPOINTS["device_info"], "GetDeviceInfo")
 
         if self.debug:
             print(f"  Device info: {json.dumps(data, indent=2)[:500]}")
 
         return data
+
+    def get_family_members(self) -> list[dict]:
+        """Get the family members (sub-users) linked to the logged-in account.
+
+        The logged-in user is not part of the list — their profile is in
+        :attr:`user_info`. Each entry is a full profile dict; ``id`` matches the
+        ``userIds`` reported per scale by :meth:`get_device_info` and
+        ``accountName`` holds the display name.
+
+        Raises:
+            RenphoAPIError: On API-level failure.
+        """
+        data = self._post_empty(ENDPOINTS["family"], "GetFamilyMembers")
+        return data if isinstance(data, list) else []
 
     def get_measurements(
         self,

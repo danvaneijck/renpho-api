@@ -24,6 +24,8 @@ def format_measurement(m: dict) -> str:
     scale = m.get("scaleName", "")
 
     lines = [f"  Date: {format_timestamp(ts)}"]
+    if m.get("userName"):
+        lines.append(f"  User: {m['userName']}")
     if local:
         lines.append(f"  Local time: {local}")
     if scale:
@@ -90,7 +92,7 @@ def save_csv(measurements: list[dict], filepath: str | Path) -> Path | None:
     # Girth keys are listed too so girth exports get the same useful-first
     # ordering; keys absent from the data are dropped below either way.
     priority = [
-        "timeStamp", "localCreatedAt",
+        "timeStamp", "localCreatedAt", "userName",
         *(key for key, _, _ in METRICS),
         *(key for key, _, _ in GIRTH_METRICS),
         "scaleName", "height", "gender",

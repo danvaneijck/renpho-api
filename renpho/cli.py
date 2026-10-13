@@ -55,12 +55,31 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  Device info keys: {list(device_info.keys())}")
         sys.exit(1)
 
+    # Names are cosmetic — a failed family lookup must not abort the run.
+    try:
+        family = client.get_family_members()
+    except (RenphoAPIError, requests.RequestException) as e:
+        print(f"  Family member lookup failed: {e}")
+        family = []
+    if family:
+        save_json(family, output_dir / "family_members.json")
+    user_names = {
+        str(m["id"]): m["accountName"]
+        for m in family
+        if m.get("id") is not None and m.get("accountName")
+    }
+    if client.user_info and client.user_info.get("accountName"):
+        user_names[str(client.user_id)] = client.user_info["accountName"]
+
     print(f"\nFound {len(scales)} scale table(s):")
     for i, scale in enumerate(scales):
         table = scale.get("tableName", "unknown")
         count = scale.get("count", 0)
-        uids = scale.get("userIds", [])
-        print(f"  [{i}] table={table}, records={count}, users={uids}")
+        users = ", ".join(
+            f"{user_names[str(u)]} ({u})" if str(u) in user_names else str(u)
+            for u in scale.get("userIds", [])
+        )
+        print(f"  [{i}] table={table}, records={count}, users=[{users}]")
 
     # Step 3: Fetch measurements
     all_measurements: list[dict] = []
@@ -78,6 +97,10 @@ def main(argv: list[str] | None = None) -> None:
 
         print(f"Fetching measurements (table: {table_name}, total: {count})...")
         measurements = client.get_measurements(table_name, uid, count)
+        for m in measurements:
+            name = user_names.get(str(m.get("bUserId", uid)))
+            if name:
+                m["userName"] = name
         all_measurements.extend(measurements)
 
     if all_measurements:
