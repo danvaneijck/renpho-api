@@ -38,10 +38,15 @@ class RenphoAPIError(Exception):
 def _check_response(result: dict, context: str = "API call") -> None:
     """Raise :class:`RenphoAPIError` if the response indicates failure."""
     code = result.get("code")
-    msg = result.get("msg", "")
-    if msg.lower() == "success" or code in SUCCESS_CODES:
+    # The API is inconsistent about the field holding the human-readable text:
+    # the older endpoints answer "msg", the gateway's own errors (-113, -114)
+    # answer "message". Reading only one of them silently threw away the
+    # diagnostic and left callers with a bare code to go on. Either may also be
+    # explicitly null, hence the coalesce to "" rather than a dict default.
+    msg = result.get("msg") or result.get("message") or ""
+    if str(msg).lower() == "success" or code in SUCCESS_CODES:
         return
-    raise RenphoAPIError(context, code, msg)
+    raise RenphoAPIError(context, code, str(msg))
 
 
 class RenphoClient:
@@ -86,12 +91,19 @@ class RenphoClient:
                 set than the default reads.
         """
         url = f"{API_BASE_URL}/{endpoint}"
-        headers: dict[str, str] = {}
+        # ``appVersion`` is what the gateway keys payload decryption off, so it
+        # has to go out on *every* call — including the unauthenticated login,
+        # which used to send no headers at all. Without it the server cannot
+        # pick a key and answers code -114 ("Decryption failed, please check
+        # the parameters or key, ..."), which reads like a wrong key but is
+        # really a missing header. See APP_VERSION in constants.py.
+        headers: dict[str, str] = {
+            "appVersion": APP_VERSION,
+            "platform": PLATFORM,
+        }
         if auth and self.token:
             headers["token"] = self.token
             headers["userId"] = str(self.user_id)
-            headers["appVersion"] = APP_VERSION
-            headers["platform"] = PLATFORM
         if extra_headers:
             headers.update(extra_headers)
 
