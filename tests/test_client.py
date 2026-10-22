@@ -7,7 +7,13 @@ import pytest
 import requests
 
 from renpho.client import RenphoAPIError, RenphoClient, _check_response
-from renpho.constants import ENDPOINTS, MEASUREMENT_TABLE_NAMES, SUCCESS_CODES
+from renpho.constants import (
+    APP_VERSION,
+    ENDPOINTS,
+    MEASUREMENT_TABLE_NAMES,
+    PLATFORM,
+    SUCCESS_CODES,
+)
 from renpho.crypto import aes_decrypt, encrypt_request
 
 
@@ -24,6 +30,94 @@ class TestCheckResponse:
             _check_response({"code": 401, "msg": "Unauthorized"})
         assert exc_info.value.code == 401
         assert "Unauthorized" in str(exc_info.value)
+
+    def test_success_by_message_field(self):
+        _check_response({"code": 999, "message": "success"})
+
+    def test_surfaces_the_message_field(self):
+        """The gateway reports its own errors under "message", not "msg"."""
+        with pytest.raises(RenphoAPIError) as exc_info:
+            _check_response({
+                "code": -114,
+                "message": "Decryption failed, please check the parameters or key",
+            })
+        assert exc_info.value.code == -114
+        assert "Decryption failed" in exc_info.value.msg
+        assert "Decryption failed" in str(exc_info.value)
+
+    def test_msg_wins_when_both_fields_are_present(self):
+        with pytest.raises(RenphoAPIError) as exc_info:
+            _check_response({"code": 401, "msg": "from msg", "message": "from message"})
+        assert exc_info.value.msg == "from msg"
+
+    @pytest.mark.parametrize(
+        "result",
+        [
+            {"code": 401, "msg": None},
+            {"code": 401, "message": None},
+            {"code": 401},
+        ],
+    )
+    def test_null_or_absent_text_does_not_crash(self, result):
+        with pytest.raises(RenphoAPIError) as exc_info:
+            _check_response(result)
+        assert exc_info.value.msg == ""
+
+
+class TestPostHeaders:
+    """``appVersion`` selects the gateway's decryption key, so it must always go out.
+
+    Omitting it on the unauthenticated login is what made the server answer
+    code -114 ("Decryption failed ...") for every caller.
+    """
+
+    @staticmethod
+    def _captured_headers(*, auth, token=None, extra_headers=None):
+        client = RenphoClient("user@example.com", "pw")
+        if token:
+            client.token = token
+            client.user_id = 12345
+        with patch.object(client._session, "post") as post:
+            post.return_value = MagicMock(
+                status_code=200, json=lambda: {"code": 101, "msg": "success"}
+            )
+            client._post(
+                ENDPOINTS["login"], {"encryptData": "x"},
+                auth=auth, extra_headers=extra_headers,
+            )
+        return post.call_args.kwargs["headers"]
+
+    def test_unauthenticated_login_still_sends_app_version(self):
+        headers = self._captured_headers(auth=False)
+        assert headers["appVersion"] == APP_VERSION
+        assert headers["platform"] == PLATFORM
+
+    def test_unauthenticated_login_sends_no_credentials(self):
+        headers = self._captured_headers(auth=False)
+        assert "token" not in headers
+        assert "userId" not in headers
+
+    def test_authenticated_call_sends_app_version_and_credentials(self):
+        headers = self._captured_headers(auth=True, token="tok-abc")
+        assert headers["appVersion"] == APP_VERSION
+        assert headers["platform"] == PLATFORM
+        assert headers["token"] == "tok-abc"
+        assert headers["userId"] == "12345"
+
+    def test_app_version_predates_the_key_rotation(self):
+        """The bundled ENCRYPTION_KEY is only accepted below app version 8.0.0."""
+        major = int(APP_VERSION.split(".")[0])
+        assert major < 8, (
+            f"APP_VERSION {APP_VERSION} is at or past the 8.0.0 key rotation; "
+            "the bundled ENCRYPTION_KEY will be rejected with code -114"
+        )
+
+    def test_extra_headers_can_override_the_defaults(self):
+        headers = self._captured_headers(
+            auth=True, token="tok-abc", extra_headers={"platform": "ios"}
+        )
+        assert headers["platform"] == "ios"
+        assert headers["appVersion"] == APP_VERSION
 
 
 class TestExtractRecords:

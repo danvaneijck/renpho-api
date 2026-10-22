@@ -3,6 +3,19 @@
 # API connection
 API_BASE_URL = "https://cloud.renpho.com"
 ENCRYPTION_KEY = "ed*wijdi$h6fe3ew"  # 16-byte AES-128 key
+
+# APP_VERSION is not cosmetic: the gateway selects the payload decryption key
+# from the ``appVersion`` request header. ENCRYPTION_KEY above is the key for
+# app versions BELOW 8.0.0 — send 8.0.0 or newer (or omit the header) and the
+# server tries a different key and fails with code -114, "Decryption failed,
+# please check the parameters or key, or the data length is too long".
+#
+# Verified against a live account on 2026-10-22: 6.6.0, 6.9.9, 7.0.0 and 7.5.0
+# all authenticate; 8.0.0, 8.5.0, 9.0.0 and 10.0.0 all return -114, as does
+# sending no appVersion header at all.
+#
+# So do NOT bump this to match the current store version without also working
+# out the newer key — that swap is what breaks login.
 APP_VERSION = "6.6.0"
 PLATFORM = "android"
 SYSTEM_VERSION = "11"  # systemversion header value (mirrors the login systemType)
