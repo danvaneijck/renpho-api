@@ -51,6 +51,7 @@ measurements are tagged with a `userName` field.
 | `RENPHO_PASSWORD` | Yes | Your Renpho account password |
 | `RENPHO_DEBUG` | No | Set to `1` to print API request/response details |
 | `RENPHO_OUTPUT_DIR` | No | Output directory (default: `renpho_data`) |
+| `RENPHO_FRIEND_ID` | No | Read this friend's daily data instead of your own (see [Reading through a friend account](#reading-through-a-friend-account)) |
 
 ## Library Usage
 
@@ -117,6 +118,49 @@ for member in client.get_family_members():
 Each entry is a full profile dict. Its `id` matches the `userIds` listed per
 scale in `get_device_info()` and the `bUserId` field on measurement records.
 Compare IDs as strings, since they arrive as both `int` and `str`.
+
+### Reading through a friend account
+
+Renpho allows one active session per account, so logging in with your main
+account signs the phone app out. To sync without that, read your data through
+Renpho's friends feature from a second account:
+
+1. Create a second Renpho account with an email and password. An account
+   created with "Sign in with Google" or Apple has no password and can't log in
+   through the API.
+2. In the Renpho app, add the second account as a friend of your main account
+   and accept the request.
+3. Log in as the second account and read your main account's data:
+
+```python
+client = RenphoClient("second@example.com", "password")
+friend = client.get_friends()[0]          # {"userId", "accountName", ...}
+
+days = client.get_friend_measurements(friend["userId"])
+# [{"day": "2026-11-02", "timeStamp": ..., "weight": 79.5, "bodyfat": 20.1, ...}, ...]
+```
+
+With the CLI, set `RENPHO_FRIEND_ID` to the friend's `userId`. It writes
+`friend_daily.json` and `friend_daily.csv` instead of the usual files.
+
+`get_friend_trend(friend_id, param)` returns the daily points for a single
+parameter, and `get_friend_summary()` and `get_friend_measure_days()` return
+the server's raw responses.
+
+Limits of the friend endpoints:
+
+- One value per day (the last weigh-in that day).
+- Body composition values only on days the scale measured them.
+- One call covers a limited window. For older data, move `end_time` (unix
+  seconds) back.
+- No segmental or girth data.
+- Days are grouped by a whole-hour UTC offset, by default this machine's
+  (`time_zone=` to override).
+
+This approach was worked out in
+[#14](https://github.com/danvaneijck/renpho-api/issues/14), with a reference
+implementation at
+[DawidKrynski/renpho-friends](https://github.com/DawidKrynski/renpho-friends).
 
 ### Multiple Renpho accounts on one email
 
@@ -199,8 +243,8 @@ Requests time out after 10 s to connect and 30 s to read by default. Pass
   password, so they cannot log in through the API.
 - **The phone app logs you out after a sync.** Renpho allows one active
   session per account, so every `login()` ends the app's session. If you run
-  scheduled syncs, run them less often or use a separate account
-  (see [#14](https://github.com/danvaneijck/renpho-api/issues/14)).
+  scheduled syncs, read your data from a second account instead (see
+  [Reading through a friend account](#reading-through-a-friend-account)).
 
 ## Smart Tape Measure (body girth)
 

@@ -36,7 +36,19 @@ ENDPOINTS = {
     # Smart Tape Measure (body girth) endpoints
     "girth_measurements": "RenphoHealth/renpho/girth/queryAllGirthsDataList",
     "girth_upload": "RenphoHealth/renpho/girth/uploadGirthsDataV2",
+    # "Friends" endpoints: read another account's data after it has accepted a
+    # friend request. See RenphoClient.get_friends() and issue #14.
+    "friends": "RenphoHealth/app/friend/friendsList",
+    "friend_measure_days": "RenphoHealth/app/friend/measure/has",
+    "friend_summary": "RenphoHealth/app/friend/measure/model",
+    "friend_trend": "RenphoHealth/app/friend/measure/trendV2",
 }
+
+# ``param`` values accepted by the friend trend/summary endpoints. Each trendV2
+# call returns one parameter, so a full daily record takes one call per entry.
+FRIEND_TREND_PARAMS = (
+    "weight", "bodyfat", "water", "muscle", "bone", "visfat", "bmr", "bmi",
+)
 
 # Measurements are sharded across 24 tables, ``measurements_info_0`` through
 # ``measurements_info_23``, and a user's rows live in the shard given by
