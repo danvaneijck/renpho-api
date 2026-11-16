@@ -221,7 +221,9 @@ class RenphoClient:
         Raises:
             RenphoAPIError: On API-level failure.
         """
-        data = self._post_empty(ENDPOINTS["device_info"], "GetDeviceInfo")
+        # An empty ``data`` field means no devices; callers index into the
+        # result, so hand back an empty dict rather than None.
+        data = self._post_empty(ENDPOINTS["device_info"], "GetDeviceInfo") or {}
 
         if self.debug:
             print(f"  Device info: {json.dumps(data, indent=2)[:500]}")

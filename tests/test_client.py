@@ -329,6 +329,22 @@ def _encrypted(records):
     }
 
 
+class TestGetDeviceInfoEmpty:
+    """An empty ``data`` field must not crash callers that index into the result."""
+
+    def test_empty_data_returns_empty_dict(self):
+        client = RenphoClient("a@b.com", "p")
+        with patch.object(client, "_post", return_value={"code": 101, "msg": "success", "data": None}):
+            assert client.get_device_info() == {}
+
+    def test_get_all_measurements_with_no_devices(self):
+        client = RenphoClient("a@b.com", "p")
+        client.token = "t"
+        client.user_id = 1
+        with patch.object(client, "_post", return_value={"code": 101, "msg": "success", "data": None}):
+            assert client.get_all_measurements() == []
+
+
 class TestGetFamilyMembers:
     def test_returns_members(self):
         client = RenphoClient("a@b.com", "p")
