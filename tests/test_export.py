@@ -36,6 +36,11 @@ def test_format_measurement_skips_zero():
     assert "Body Fat" not in result
 
 
+def test_format_measurement_shows_user_name():
+    m = {"timeStamp": 1705320000, "weight": 75.5, "userName": "Kid"}
+    assert "User: Kid" in format_measurement(m)
+
+
 def test_save_json(tmp_path):
     data = [{"weight": 70}, {"weight": 71}]
     filepath = tmp_path / "out" / "data.json"
