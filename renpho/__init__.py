@@ -13,6 +13,9 @@ Quick start::
     girths = client.get_girth_measurements()         # smart tape measure
 """
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _version
+
 from .client import RenphoAPIError, RenphoClient
 from .export import (
     format_girth,
@@ -23,7 +26,13 @@ from .export import (
 )
 from .girth import build_girth_record, girth_date, normalize_girth
 
+try:
+    __version__ = _version("renpho-api")
+except PackageNotFoundError:  # imported from a source tree that isn't installed
+    __version__ = "0+unknown"
+
 __all__ = [
+    "__version__",
     "RenphoClient",
     "RenphoAPIError",
     "format_measurement",

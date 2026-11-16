@@ -1,4 +1,9 @@
-.PHONY: test
+.PHONY: test lint check
 
 test:
-	uv run pytest tests/ -v --cov=renpho --cov-report=term-missing
+	uv run --extra dev pytest tests/ -v --cov=renpho --cov-report=term-missing
+
+lint:
+	uv run --extra dev ruff check .
+
+check: lint test

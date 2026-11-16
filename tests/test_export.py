@@ -1,7 +1,6 @@
 """Tests for renpho.export — formatting and file export."""
 
 import json
-from pathlib import Path
 
 from renpho.export import format_measurement, format_timestamp, save_csv, save_json
 

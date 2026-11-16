@@ -40,8 +40,9 @@ recent, and save everything to `renpho_data/` as JSON and CSV. If the account ha
 a smart tape measure it also writes `girth.json` / `girth.csv`; accounts without
 one simply report no girth records.
 
-Family members linked to the account are saved to `family_members.json`, and
-measurements are tagged with a `userName` field.
+The CLI exports measurements for you and every family member on the account.
+Each row is tagged with a `userName` field, and the family profiles are saved to
+`family_members.json`.
 
 ### Environment variables
 
@@ -61,11 +62,15 @@ from renpho import RenphoClient
 client = RenphoClient("user@example.com", "password")
 client.login()
 
-# Fetch all measurements in one call
+# All of your measurements, newest first. Family members who share the scale
+# are not included (see "Family members" below).
 measurements = client.get_all_measurements()
 
 for m in measurements:
     print(m["weight"], m.get("bodyfat"), m.get("muscle"))
+
+import renpho
+print(renpho.__version__)
 ```
 
 ### Step-by-step control
@@ -80,11 +85,13 @@ client.login()
 device_info = client.get_device_info()
 scales = device_info["scale"]
 
-# Fetch from a specific scale table
+# Fetch your rows from a scale table that lists you. The server only returns
+# rows for the user id you pass, even on a table shared with family members.
 # Use get_body_composition_measurements() for scales with impedance sensors
-# (body fat, muscle, etc.) — the server-side count is unreliable for these.
-# Fall back to get_measurements() for weight-only scales.
-table = scales[0]
+# (body fat, muscle, etc.) and fall back to get_measurements() when it comes
+# back empty. Don't pass the table's "count" as a total: it counts every
+# person on that table.
+table = next(s for s in scales if str(client.user_id) in map(str, s["userIds"]))
 measurements = client.get_body_composition_measurements(
     table_name=table["tableName"],
     user_id=client.user_id,
@@ -93,7 +100,6 @@ if not measurements:
     measurements = client.get_measurements(
         table_name=table["tableName"],
         user_id=client.user_id,
-        total_count=table["count"],
     )
 
 # Export
@@ -118,6 +124,18 @@ for member in client.get_family_members():
 Each entry is a full profile dict. Its `id` matches the `userIds` listed per
 scale in `get_device_info()` and the `bUserId` field on measurement records.
 Compare IDs as strings, since they arrive as both `int` and `str`.
+
+To fetch a family member's measurements, pass their `id`:
+
+```python
+family = client.get_family_members()
+
+# One person instead of you:
+kid = client.get_all_measurements(profile_user_id=family[0]["id"])
+
+# You plus everyone; bUserId says whose each row is:
+everyone = client.get_all_measurements(extra_user_ids=[m["id"] for m in family])
+```
 
 ### Reading through a friend account
 
@@ -180,6 +198,14 @@ measurements = client.get_all_measurements(
 
 The library locates that user's rows, fetches them, and dedupes by
 `(table, id)` so you get a single combined timeline.
+
+A password login can land on either account. If you know which one you want,
+pass its ID to `login()`. On a mismatch the session is cleared and
+`RenphoAPIError` is raised, so nothing reads the wrong account's data:
+
+```python
+client.login(expected_user_id="5975813831868809088")
+```
 
 **How the lookup works.** Measurements are sharded across 24 tables,
 `measurements_info_0` through `measurements_info_23`, and a user's rows live in
@@ -400,7 +426,9 @@ renpho-api/
 │   ├── constants.py      # API endpoints, device types, metrics, girth sites
 │   ├── crypto.py         # AES encryption/decryption
 │   ├── export.py         # JSON/CSV export helpers
-│   └── girth.py          # Smart Tape Measure (body girth) helpers
-├── tests/                # Unit tests
-└── .github/workflows/    # CI + PyPI release automation
+│   ├── girth.py          # Smart Tape Measure (body girth) helpers
+│   └── py.typed          # Marks the package as typed for type checkers
+├── tests/                # Unit tests (network access is blocked)
+├── Makefile              # make test / make lint / make check
+└── .github/workflows/    # CI (ruff + tests) and PyPI release automation
 ```

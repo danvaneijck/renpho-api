@@ -11,7 +11,6 @@ from renpho.crypto import (
     encrypt_request,
 )
 
-
 # Produced independently with OpenSSL, so a change in the crypto library that
 # still round-trips but no longer matches what Renpho's server expects fails:
 #   printf '%s' '{"pageNum":1,"pageSize":50}' \
