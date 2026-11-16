@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renpho-api"
-version = "0.4.0"
+version = "0.5.0"
 description = "Unofficial Python client for the Renpho Health API — pull body composition data from Renpho smart scales and body girth data from smart tape measures."
 readme = "README.md"
 license = "MIT"
@@ -32,6 +32,10 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
+    # The CA bundle that requests uses. 2026.10.19 removed the distrusted
+    # emSign (eMudhra) roots and restored the unaffected ones. Floor suggested
+    # by @ChocoTonic in the renpho-py fork.
+    "certifi>=2026.10.19",
     "requests>=2.28",
     "pycryptodome>=3.15",
 ]

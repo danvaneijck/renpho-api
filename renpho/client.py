@@ -1,21 +1,27 @@
 """Renpho API client for fetching scale measurements."""
 
+import base64
 import json
+import os
 import time
+from pathlib import Path
 
 import requests
 
 from .constants import (
     API_BASE_URL,
     APP_VERSION,
-    BODY_WEIGHT_SCALES,
+    AUTH_ERROR_CODES,
     ENDPOINTS,
     FRIEND_TREND_PARAMS,
     GIRTH_WRITE_PLATFORM,
+    LOGIN_DEVICE_TYPES,
     MEASUREMENT_TABLE_NAMES,
     MEASUREMENT_TABLE_SHARDS,
     PLATFORM,
+    RATE_LIMIT_CODES,
     REQUEST_TIMEOUT,
+    SESSION_ERROR_CODES,
     SUCCESS_CODES,
     SYSTEM_VERSION,
 )
@@ -37,8 +43,49 @@ class RenphoAPIError(Exception):
         super().__init__(f"{context} failed: code={code}, msg={msg}")
 
 
+class RenphoAuthError(RenphoAPIError):
+    """The credentials were rejected (wrong password, unknown email), or the
+    login landed on a different account than ``expected_user_id``."""
+
+
+class RenphoSessionError(RenphoAPIError):
+    """The session token is no longer valid.
+
+    Tokens last 90 days, but Renpho allows one active session per account: any
+    other login (the phone app, another script) ends this one. Log in again,
+    or pass ``auto_relogin=True`` to :class:`RenphoClient`.
+    """
+
+
+class RenphoRateLimitError(RenphoAPIError):
+    """The server is rate limiting requests (code 429). Wait and retry."""
+
+
+def _error_class(code) -> type[RenphoAPIError]:
+    code = str(code)
+    if code in AUTH_ERROR_CODES:
+        return RenphoAuthError
+    if code in SESSION_ERROR_CODES:
+        return RenphoSessionError
+    if code in RATE_LIMIT_CODES:
+        return RenphoRateLimitError
+    return RenphoAPIError
+
+
+def _token_expiry(token: str | None) -> int | None:
+    """The ``exp`` claim (unix seconds) of a JWT session token, or None."""
+    parts = (token or "").split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+        return int(claims["exp"])
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def _check_response(result: dict, context: str = "API call") -> None:
-    """Raise :class:`RenphoAPIError` if the response indicates failure."""
+    """Raise :class:`RenphoAPIError` (or a subclass) if the response indicates failure."""
     code = result.get("code")
     # The API is inconsistent about the field holding the human-readable text:
     # the older endpoints answer "msg", the gateway's own errors (-113, -114)
@@ -48,7 +95,7 @@ def _check_response(result: dict, context: str = "API call") -> None:
     msg = result.get("msg") or result.get("message") or ""
     if str(msg).lower() == "success" or code in SUCCESS_CODES:
         return
-    raise RenphoAPIError(context, code, str(msg))
+    raise _error_class(code)(context, code, str(msg))
 
 
 class RenphoClient:
@@ -70,6 +117,8 @@ class RenphoClient:
         *,
         debug: bool = False,
         timeout: float | tuple[float, float] | None = REQUEST_TIMEOUT,
+        session_file: str | os.PathLike | None = None,
+        auto_relogin: bool = False,
     ):
         """
         Args:
@@ -80,14 +129,24 @@ class RenphoClient:
                 ``(connect, read)`` pair. Defaults to
                 :data:`~renpho.constants.REQUEST_TIMEOUT`. ``None`` disables it
                 (not recommended: a stalled server then blocks forever).
+            session_file: Reuse the session across runs. A saved session is
+                loaded instead of logging in, and every new login is saved
+                here (file mode 0600). See :meth:`save_session`.
+            auto_relogin: When a call fails because the session was replaced
+                or expired, log in again once and retry the call. Off by
+                default: logging in signs out every other session on the
+                account, including the phone app.
         """
         self.email = email
         self.password = password
         self.debug = debug
         self.timeout = timeout
+        self.session_file = Path(session_file).expanduser() if session_file else None
+        self.auto_relogin = auto_relogin
         self.token: str | None = None
         self.user_id: int | str | None = None
         self.user_info: dict | None = None
+        self.devices: list[dict] = []
         self._session = requests.Session()
 
     # ----- internal helpers -----
@@ -99,6 +158,7 @@ class RenphoClient:
         *,
         auth: bool = True,
         extra_headers: dict[str, str] | None = None,
+        _retried: bool = False,
     ) -> dict:
         """Make an encrypted POST request to the Renpho API.
 
@@ -109,6 +169,10 @@ class RenphoClient:
             extra_headers: Additional headers merged on top of the auth headers.
                 Some endpoints (e.g. the girth upload) require a fuller header
                 set than the default reads.
+
+        Raises:
+            RenphoSessionError: The session was replaced or expired (and
+                ``auto_relogin`` is off, or the retry failed too).
         """
         url = f"{API_BASE_URL}/{endpoint}"
         # ``appVersion`` is what the gateway keys payload decryption off, so it
@@ -140,8 +204,125 @@ class RenphoClient:
             print(f"  Status: {resp.status_code}")
             print(f"  Response: {resp.text[:300]}")
 
+        result = None
+        if auth and self.token:
+            # A dead session shows up as code 403 in an HTTP 200 body, or as an
+            # HTTP 401/403 status.
+            if resp.status_code not in (401, 403):
+                resp.raise_for_status()
+                result = resp.json()
+            code = resp.status_code if result is None else result.get("code")
+            if str(code) in SESSION_ERROR_CODES:
+                if self.auto_relogin and not _retried:
+                    if self.debug:
+                        print("  Session replaced or expired; logging in again")
+                    self.login()
+                    return self._post(
+                        endpoint, body, auth=auth,
+                        extra_headers=extra_headers, _retried=True,
+                    )
+                msg = "" if result is None else (result.get("msg") or result.get("message") or "")
+                raise RenphoSessionError(endpoint, code, str(msg) or (
+                    "session replaced by another login or expired; log in again"
+                ))
+            return result
+
         resp.raise_for_status()
         return resp.json()
+
+    # ----- sessions -----
+
+    @property
+    def token_expires_at(self) -> int | None:
+        """When the current token expires (unix seconds), decoded from the token.
+
+        Renpho tokens are JWTs valid for 90 days. Another login ends the session
+        earlier, which the token cannot tell you; :meth:`get_token_info` asks
+        the server instead.
+        """
+        return _token_expiry(self.token)
+
+    def export_session(self) -> dict:
+        """The current session as a dict for :meth:`import_session`.
+
+        Contains the session token, which grants access to the account until
+        it expires: store it like a password.
+        """
+        if not self.token:
+            raise RenphoSessionError("export_session", None, "not logged in")
+        return {
+            "version": 1,
+            "email": self.email,
+            "user_id": self.user_id,
+            "token": self.token,
+            "expires_at": self.token_expires_at,
+            "saved_at": int(time.time()),
+        }
+
+    def import_session(self, session: dict) -> bool:
+        """Use a session from :meth:`export_session` instead of logging in.
+
+        Returns False (and changes nothing) if the session belongs to another
+        email or its token has expired. A session that another login has since
+        replaced still imports; the first call then raises
+        :class:`RenphoSessionError` (or logs in again with ``auto_relogin``).
+        """
+        token = session.get("token")
+        if not token or str(session.get("email", "")).lower() != self.email.lower():
+            return False
+        exp = _token_expiry(token) or session.get("expires_at")
+        if exp and exp <= time.time() + 60:
+            return False
+        self.token = token
+        self.user_id = session.get("user_id")
+        return True
+
+    def save_session(self, path: str | os.PathLike | None = None) -> Path:
+        """Write the session to *path* (default: ``session_file``), mode 0600."""
+        target = Path(path).expanduser() if path else self.session_file
+        if target is None:
+            raise ValueError("no path given and no session_file configured")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(self.export_session(), f)
+        os.replace(tmp, target)
+        return target
+
+    def load_session(self, path: str | os.PathLike | None = None) -> bool:
+        """Load a session saved by :meth:`save_session`. Returns True if used."""
+        source = Path(path).expanduser() if path else self.session_file
+        if source is None or not source.exists():
+            return False
+        try:
+            session = json.loads(source.read_text())
+        except (OSError, ValueError):
+            return False
+        return isinstance(session, dict) and self.import_session(session)
+
+    def _ensure_session(self) -> None:
+        """Make sure there is a token: reuse ``session_file`` if possible, else log in."""
+        if self.token:
+            return
+        if self.session_file and self.load_session():
+            if self.debug:
+                print(f"  Reusing saved session from {self.session_file}")
+            return
+        self.login()
+
+    def get_token_info(self) -> dict:
+        """Ask the server about the current token: ``{"issAt", "expAt", "userId"}``.
+
+        ``issAt``/``expAt`` are unix milliseconds. Raises
+        :class:`RenphoSessionError` if the session is no longer valid, so this
+        doubles as a cheap "is my saved session still alive?" check.
+        """
+        self._ensure_session()
+        result = self._post(ENDPOINTS["token_time"], encrypt_empty_object())
+        _check_response(result, "GetTokenTime")
+        data = decrypt_response(result["data"]) if result.get("data") else {}
+        return {k: v for k, v in data.items() if k != "token"} if isinstance(data, dict) else {}
 
     def _post_empty(self, endpoint: str, context: str):
         """POST an empty encrypted body and return the decrypted ``data``.
@@ -173,6 +354,13 @@ class RenphoClient:
         """Authenticate and store the session token.
 
         Returns the full decrypted login response (includes user profile).
+        Sets :attr:`token`, :attr:`user_id`, :attr:`user_info` and
+        :attr:`devices` (the account's bound devices, each with a
+        ``connection`` key of ``"bluetooth"`` or ``"wifi"``), and saves the
+        session if ``session_file`` is set.
+
+        Logging in ends every other session on the account, including the
+        phone app's.
 
         Args:
             expected_user_id: If given, the login must land on this user id.
@@ -197,8 +385,10 @@ class RenphoClient:
                 "email": self.email,
                 "platform": PLATFORM,
             },
+            # The login response lists the account's bound devices of these
+            # types (see ``devices``).
             "bindingList": {
-                "deviceTypes": BODY_WEIGHT_SCALES,
+                "deviceTypes": LOGIN_DEVICE_TYPES,
             },
         }
 
@@ -222,11 +412,22 @@ class RenphoClient:
         if expected_user_id is not None and str(self.user_id) != str(expected_user_id):
             actual = self.user_id
             self.token = self.user_id = self.user_info = None
-            raise RenphoAPIError(
+            raise RenphoAuthError(
                 "Login",
                 None,
                 f"logged in as user {actual}, expected {expected_user_id}",
             )
+
+        self.devices = []
+        binding = user_data.get("bindingList")
+        if isinstance(binding, dict):
+            for connection in ("bluetooth", "wifi"):
+                for device in binding.get(connection) or []:
+                    if isinstance(device, dict):
+                        self.devices.append({**device, "connection": connection})
+
+        if self.session_file:
+            self.save_session()
 
         return user_data
 
@@ -279,16 +480,29 @@ class RenphoClient:
                 tables.append(table)
         return tables
 
-    def _fetch_table(self, table: str, user_id) -> list[dict]:
-        """All of *user_id*'s rows in *table*: body composition endpoint, then legacy.
+    def _fetch_table(
+        self, table: str, user_id, *, scale_count=None, composition_count=None
+    ) -> list[tuple[str, dict]]:
+        """*user_id*'s rows in *table* as ``(store, row)`` pairs.
 
-        Some accounts answer empty on the body composition endpoint while the
-        legacy one holds every row, so an empty first answer is not the end.
+        Body composition and legacy scale rows are separate stores that share
+        table names. With per-store counts (from :meth:`get_data_counts`), each
+        store that holds rows is read, as the app does. Without counts, or when
+        both are 0, the body composition endpoint is tried first and the
+        legacy one when that comes back empty: some accounts keep every row in
+        the legacy store.
         """
-        rows = self.get_body_composition_measurements(table, user_id)
-        if not rows:
-            rows = self.get_measurements(table, user_id)
-        return rows
+        if not scale_count and not composition_count:
+            rows = self.get_body_composition_measurements(table, user_id)
+            if rows:
+                return [("composition", r) for r in rows]
+            return [("scale", r) for r in self.get_measurements(table, user_id)]
+        pairs: list[tuple[str, dict]] = []
+        if composition_count:
+            pairs += [("composition", r) for r in self.get_body_composition_measurements(table, user_id)]
+        if scale_count:
+            pairs += [("scale", r) for r in self.get_measurements(table, user_id)]
+        return pairs
 
     @staticmethod
     def _take_new(records: list[dict], seen: set) -> list[dict]:
@@ -561,8 +775,7 @@ class RenphoClient:
         Returns:
             List of girth measurement dicts sorted by timestamp (newest first).
         """
-        if not self.token:
-            self.login()
+        self._ensure_session()
 
         all_measurements: list[dict] = []
         seen: set = set()
@@ -637,12 +850,19 @@ class RenphoClient:
             Measurement dicts sorted newest first, deduped by ``(table, id)``
             (row ids are only unique within a table).
         """
-        if not self.token:
-            self.login()
+        self._ensure_session()
 
         if device_info is None:
-            device_info = self.get_device_info()
+            device_info = self.get_data_counts(names=["scale", "compositionScale"])
         scales = device_info.get("scale") or []
+        # Per-store row counts are only usable when device_info came from
+        # get_data_counts(); device/count has no compositionScale list.
+        composition = device_info.get("compositionScale")
+        if composition is None:
+            scale_counts = composition_counts = {}
+        else:
+            scale_counts = {s.get("tableName"): s.get("count") or 0 for s in scales if isinstance(s, dict)}
+            composition_counts = {s.get("tableName"): s.get("count") or 0 for s in composition if isinstance(s, dict)}
 
         primary = self.user_id if profile_user_id is None else profile_user_id
 
@@ -656,6 +876,8 @@ class RenphoClient:
             done.add(str(uid))
 
             tables = self._tables_listing(scales, uid)
+            if composition:
+                tables += [t for t in self._tables_listing(composition, uid) if t not in tables]
             if not tables:
                 if uid is primary:
                     # Not on any scale: try the shard their id maps to, without
@@ -666,10 +888,16 @@ class RenphoClient:
                     tables = self.discover_user_tables(uid)
 
             for table in tables:
-                for m in self._fetch_table(table, uid):
+                pairs = self._fetch_table(
+                    table, uid,
+                    scale_count=scale_counts.get(table),
+                    composition_count=composition_counts.get(table),
+                )
+                for store, m in pairs:
                     rid = m.get("id")
                     if rid is not None:
-                        key = (table, str(rid))
+                        # The two stores number their rows independently.
+                        key = (store, table, str(rid))
                         if key in fetched:
                             continue
                         fetched.add(key)
@@ -680,6 +908,115 @@ class RenphoClient:
             reverse=True,
         )
         return all_measurements
+
+    # ----- counts and experimental reads -----
+
+    def _query(self, endpoint: str, payload, context: str):
+        """POST *payload* to ``ENDPOINTS[endpoint]`` and return the decrypted ``data``."""
+        self._ensure_session()
+        result = self._post(ENDPOINTS[endpoint], encrypt_request(payload))
+        _check_response(result, context)
+        return decrypt_response(result["data"]) if result.get("data") else None
+
+    def get_data_counts(self, names: list[str] | None = None) -> dict:
+        """How much data the account holds, per data type (``device/countV2``).
+
+        Returns the ``scale`` and ``compositionScale`` table lists (each entry
+        ``{"tableName", "count", "userIds"}``, counts per table across all its
+        users; ``compositionScale`` is the body composition store) plus totals
+        such as ``girth``, ``rope``, ``stepCount``, ``treadmill`` and goal counts.
+
+        This is what the Renpho app uses in place of ``device/count``. The
+        server only includes ``compositionScale`` when it is asked for by name,
+        so with no *names* this makes two requests and merges them. Pass
+        *names* (e.g. ``["scale", "compositionScale"]``) for a single request
+        limited to those keys.
+        """
+        def fetch(payload):
+            data = self._query("data_counts", payload, "GetDataCounts")
+            return data if isinstance(data, dict) else {}
+
+        if names is not None:
+            data = fetch({"names": list(names)})
+        else:
+            data = fetch({})
+            data.update(fetch({"names": ["scale", "compositionScale"]}))
+        for key in ("scale", "compositionScale"):
+            for table in data.get(key) or []:
+                if isinstance(table, dict) and "userIds" in table:
+                    table["userIds"] = self._normalize_user_ids(table["userIds"])
+        return data
+
+    def get_measurement_count(self) -> int:
+        """The logged-in user's total number of scale measurements (one request).
+
+        Much cheaper than fetching everything, so it works as a "has anything
+        new arrived?" check before calling :meth:`get_all_measurements`.
+        """
+        rows = self._query("measurement_count", {}, "GetMeasurementCount") or []
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and str(row.get("userId")) == str(self.user_id):
+                return int(row.get("count") or 0)
+        return 0
+
+    def get_unassigned_measurements(self, *, page_size: int = 20) -> dict:
+        """Experimental: weigh-ins the scale could not attribute to a profile.
+
+        Returns the server's raw page: ``{"total", "list": [{"measurements",
+        "unknownMeasurements"}], ...}``. The endpoint answers on a live account,
+        but one with no unassigned weigh-ins, so the record fields are
+        unconfirmed.
+        """
+        self._ensure_session()
+        data = self._query(
+            "unassigned_measurements",
+            {"userId": int(self.user_id), "pageSize": page_size, "unknown": True, "getAll": 0},
+            "GetUnassignedMeasurements",
+        )
+        return data if isinstance(data, dict) else {}
+
+    def get_third_party_measurements(self, *, page_size: int = 100) -> list[dict]:
+        """Experimental: measurements imported from other apps (e.g. Fitbit,
+        Health Connect, Samsung Health), all pages. Record fields unconfirmed."""
+        self._ensure_session()
+        records: list[dict] = []
+        seen: set = set()
+        page = 1
+        while True:
+            data = self._query(
+                "third_party_measurements",
+                {"userId": int(self.user_id), "pageSize": str(page_size), "pageNum": page},
+                f"GetThirdPartyMeasurements page {page}",
+            )
+            rows = self._extract_records(data) or []
+            new = self._take_new(rows, seen)
+            if not new:
+                break
+            records.extend(new)
+            if len(rows) < page_size:
+                break
+            page += 1
+        return records
+
+    def get_third_party_sources(self) -> list[dict]:
+        """Experimental: the third-party data sources linked to the account."""
+        self._ensure_session()
+        data = self._query("third_party_sources", {"userId": int(self.user_id)}, "GetThirdPartySources")
+        return data if isinstance(data, list) else []
+
+    def get_goals(self) -> dict:
+        """Experimental: goals set in the app, as ``{"scale": [...], "girth": [...]}``.
+
+        Scale goals come from ``queryGoalRecordsV2`` and tape-measure goals
+        from ``queryGirthsGoals`` (which covers every profile on the account).
+        Record fields are unconfirmed on a live account.
+        """
+        scale = self._query("scale_goals", {}, "GetScaleGoals")
+        girth = self._query("girth_goals", {}, "GetGirthGoals")
+        return {
+            "scale": scale if isinstance(scale, list) else [],
+            "girth": girth if isinstance(girth, list) else [],
+        }
 
     # ----- friends (read another account's data) -----
     #
@@ -700,8 +1037,7 @@ class RenphoClient:
         ``timeZone`` header in signed form (``+0``, ``+2``, ``-5``). The other
         friend endpoints accept it, so it is always sent.
         """
-        if not self.token:
-            self.login()
+        self._ensure_session()
         result = self._post(
             endpoint,
             encrypt_request(payload),
@@ -720,8 +1056,7 @@ class RenphoClient:
 
         Calls :meth:`login` first if no token is set.
         """
-        if not self.token:
-            self.login()
+        self._ensure_session()
         data = self._friend_post(
             ENDPOINTS["friends"],
             {"userId": str(self.user_id), "pageNum": 1, "pageSize": page_size},
@@ -899,8 +1234,7 @@ class RenphoClient:
         Raises:
             RenphoAPIError: On API-level failure.
         """
-        if not self.token:
-            self.login()
+        self._ensure_session()
 
         encrypted_body = encrypt_request(records)
         headers = self._girth_write_headers(time_zone, zone_id, device_id, platform)

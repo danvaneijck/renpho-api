@@ -16,7 +16,13 @@ Quick start::
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _version
 
-from .client import RenphoAPIError, RenphoClient
+from .client import (
+    RenphoAPIError,
+    RenphoAuthError,
+    RenphoClient,
+    RenphoRateLimitError,
+    RenphoSessionError,
+)
 from .export import (
     format_girth,
     format_measurement,
@@ -35,6 +41,9 @@ __all__ = [
     "__version__",
     "RenphoClient",
     "RenphoAPIError",
+    "RenphoAuthError",
+    "RenphoSessionError",
+    "RenphoRateLimitError",
     "format_measurement",
     "format_timestamp",
     "save_csv",

@@ -42,6 +42,16 @@ ENDPOINTS = {
     "friend_measure_days": "RenphoHealth/app/friend/measure/has",
     "friend_summary": "RenphoHealth/app/friend/measure/model",
     "friend_trend": "RenphoHealth/app/friend/measure/trendV2",
+    # Found in the Renpho Health 7.11.6 app and checked against a live account.
+    "data_counts": "renpho-aggregation/device/countV2",
+    "measurement_count": "RenphoHealth/scale/countAll",
+    # Experimental: these answer on a live account, but it had no such data, so
+    # the shape of individual records is unconfirmed.
+    "unassigned_measurements": "RenphoHealth/va/scale/getDualModeMeasurementByMac",
+    "third_party_measurements": "RenphoHealth/scale/queryThirdPartyMeasureData",
+    "third_party_sources": "RenphoHealth/scale/getThirdPartyDatasource",
+    "scale_goals": "RenphoHealth/scale/queryGoalRecordsV2",
+    "girth_goals": "RenphoHealth/renpho/girth/queryGirthsGoals",
 }
 
 # ``param`` values accepted by the friend trend/summary endpoints. Each trendV2
@@ -64,7 +74,8 @@ MEASUREMENT_TABLE_NAMES = [
     f"measurements_info_{i}" for i in range(MEASUREMENT_TABLE_SHARDS)
 ]
 
-# Body weight scale device types
+# Legacy two-digit body weight scale device types. Kept for compatibility; the
+# login request now sends LOGIN_DEVICE_TYPES.
 BODY_WEIGHT_SCALES = [
     "01", "02", "03", "04", "05", "06", "07", "08", "09", "0A",
     "0B", "0C", "0D", "0E", "0F", "10", "11", "12", "13", "14",
@@ -174,5 +185,25 @@ GIRTH_VALUE_FIELDS = [
     "calfValue", "leftCalfValue", "rightCalfValue",
 ]
 
+# Device type codes the Renpho Health app (7.11.6) sends in the login
+# request's ``bindingList``. The login response lists the account's bound
+# devices of these types.
+LOGIN_DEVICE_TYPES = [
+    "00001", "00002", "00003", "00006", "00007", "00008", "00009", "00010",
+    "00011", "00012", "00015", "00016", "00024", "00025", "00026", "00027",
+    "00029", "00032", "00033", "00034", "00035", "00036", "00051", "00054",
+    "00038", "00044", "00046", "00048", "00023", "00042", "00043", "00057",
+    "00045", "00047", "00049", "00050", "00053", "00055", "00059", "00052",
+    "00058", "00061", "00062", "00063", "00064", "00065", "00067", "00060",
+    "00076", "00070", "00072", "00073", "00071",
+]
+
 # Success codes returned by the API
 SUCCESS_CODES = {0, "0", 101, "101", 200, "200", 20000, "20000"}
+
+# Error codes mapped to specific exception types (compared as strings).
+AUTH_ERROR_CODES = {"104", "106", "20001"}  # wrong password / unknown email
+# 401/403: the token expired, or another login (the phone app, another script)
+# replaced this session. Renpho allows one active session per account.
+SESSION_ERROR_CODES = {"401", "403"}
+RATE_LIMIT_CODES = {"429"}

@@ -13,6 +13,9 @@ EXPORTS = {
     "__version__",
     "RenphoClient",
     "RenphoAPIError",
+    "RenphoAuthError",
+    "RenphoSessionError",
+    "RenphoRateLimitError",
     "format_measurement",
     "format_timestamp",
     "save_csv",
@@ -25,7 +28,7 @@ EXPORTS = {
 
 # method name -> keyword arguments callers rely on
 CLIENT_METHODS = {
-    "__init__": {"email", "password", "debug", "timeout"},
+    "__init__": {"email", "password", "debug", "timeout", "session_file", "auto_relogin"},
     "login": {"expected_user_id"},
     "get_device_info": set(),
     "get_family_members": set(),
@@ -42,6 +45,17 @@ CLIENT_METHODS = {
     "get_friend_trend": {"friend_id", "param", "time_type", "end_time", "time_zone"},
     "get_friend_measurements": {"friend_id", "params", "time_type", "end_time", "time_zone"},
     "local_utc_offset_hours": set(),
+    "export_session": set(),
+    "import_session": {"session"},
+    "save_session": {"path"},
+    "load_session": {"path"},
+    "get_token_info": set(),
+    "get_data_counts": {"names"},
+    "get_measurement_count": set(),
+    "get_unassigned_measurements": {"page_size"},
+    "get_third_party_measurements": {"page_size"},
+    "get_third_party_sources": set(),
+    "get_goals": set(),
 }
 
 
@@ -63,6 +77,17 @@ def test_client_methods_and_arguments():
         params = set(inspect.signature(method).parameters)
         missing = kwargs - params
         assert not missing, f"RenphoClient.{name} lost arguments: {sorted(missing)}"
+
+
+def test_client_attributes():
+    client = RenphoClient("a@b.com", "p")
+    for attr in ("token", "user_id", "user_info", "devices", "token_expires_at"):
+        assert hasattr(client, attr), attr
+
+
+def test_error_hierarchy():
+    for cls in (renpho.RenphoAuthError, renpho.RenphoSessionError, renpho.RenphoRateLimitError):
+        assert issubclass(cls, renpho.RenphoAPIError)
 
 
 def test_api_error_attributes():

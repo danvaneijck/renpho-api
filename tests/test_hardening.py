@@ -210,7 +210,7 @@ class TestCliUsesLibraryFetch:
             self.token, self.user_id = "tok", 42
 
         with patch.object(RenphoClient, "login", fake_login), \
-             patch.object(RenphoClient, "get_device_info", return_value=info), \
+             patch.object(RenphoClient, "get_data_counts", return_value=info), \
              patch.object(RenphoClient, "get_family_members", return_value=[]), \
              patch.object(RenphoClient, "get_body_composition_measurements", return_value=rows), \
              patch.object(RenphoClient, "get_girth_measurements", return_value=[]):
