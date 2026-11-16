@@ -317,7 +317,7 @@ records are unconfirmed. They return the server's data as-is.
 If you have this kind of data, an issue with the (redacted) record shapes would
 help firm these up.
 
-[docs/endpoints.md](docs/endpoints.md) lists every endpoint the Renpho app
+[docs/endpoints.md](https://github.com/danvaneijck/renpho-api/blob/main/docs/endpoints.md) lists every endpoint the Renpho app
 uses (366 paths), with request payloads, error codes and what has been
 verified for each.
 
