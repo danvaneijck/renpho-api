@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renpho-api"
-version = "0.3.0"
+version = "0.4.0"
 description = "Unofficial Python client for the Renpho Health API — pull body composition data from Renpho smart scales and body girth data from smart tape measures."
 readme = "README.md"
 license = "MIT"
@@ -29,6 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries",
+    "Typing :: Typed",
 ]
 dependencies = [
     "requests>=2.28",
@@ -37,7 +38,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dotenv = ["python-dotenv>=1.0"]
-dev = ["pytest>=7.0"]
+# ruff is pinned exactly: new releases add lint rules and would otherwise
+# break CI without any change here.
+dev = ["pytest>=7.0", "ruff==0.17.3"]
 
 [project.urls]
 Repository = "https://github.com/danvaneijck/renpho-api"
@@ -49,6 +52,18 @@ renpho = "renpho.cli:main"
 # output folder (renpho_data/) once it exists and then refuses to build.
 [tool.setuptools]
 packages = ["renpho"]
+
+[tool.setuptools.package-data]
+renpho = ["py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, import order, bugbear, pyupgrade. Line length is
+# left to review rather than enforced.
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = ["E501"]
 
 [dependency-groups]
 dev = [

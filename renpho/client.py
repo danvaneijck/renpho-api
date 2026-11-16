@@ -1,7 +1,6 @@
 """Renpho API client for fetching scale measurements."""
 
 import json
-import sys
 import time
 
 import requests
@@ -170,13 +169,21 @@ class RenphoClient:
 
     # ----- public API -----
 
-    def login(self) -> dict:
+    def login(self, *, expected_user_id=None) -> dict:
         """Authenticate and store the session token.
 
         Returns the full decrypted login response (includes user profile).
 
+        Args:
+            expected_user_id: If given, the login must land on this user id.
+                Some emails have two Renpho accounts (e.g. one left over from a
+                Google SSO migration), and a password login can reach the wrong
+                one. On a mismatch the session is cleared and an error raised,
+                so no later call reads the wrong account's data.
+
         Raises:
-            RenphoAPIError: If the API rejects the credentials.
+            RenphoAPIError: If the API rejects the credentials, or the account
+                is not *expected_user_id*.
             requests.HTTPError: On transport-level failures.
         """
         login_payload = {
@@ -211,6 +218,15 @@ class RenphoClient:
 
         if not self.token:
             raise RenphoAPIError("Login", None, "No token in login response")
+
+        if expected_user_id is not None and str(self.user_id) != str(expected_user_id):
+            actual = self.user_id
+            self.token = self.user_id = self.user_info = None
+            raise RenphoAPIError(
+                "Login",
+                None,
+                f"logged in as user {actual}, expected {expected_user_id}",
+            )
 
         return user_data
 
@@ -248,17 +264,31 @@ class RenphoClient:
             return [v for v in value if v is not None]
         return [value]
 
-    def _scale_owner(self, user_ids: list):
-        """The id to query a scale table with.
+    @classmethod
+    def _tables_listing(cls, scales: list, user_id) -> list[str]:
+        """Names of the scale tables in *scales* whose ``userIds`` include *user_id*.
 
-        The logged-in user if the scale lists them, otherwise the first listed
-        id. IDs arrive as both int and str, so they are compared as strings: a
-        plain ``in`` check silently fell through to someone else's id whenever
-        the types differed.
+        IDs arrive as both int and str, so they are compared as strings.
         """
-        if not user_ids or any(str(u) == str(self.user_id) for u in user_ids):
-            return self.user_id
-        return user_ids[0]
+        tables: list[str] = []
+        for scale in scales:
+            table = scale.get("tableName") if isinstance(scale, dict) else None
+            if not table or table in tables:
+                continue
+            if any(str(u) == str(user_id) for u in cls._normalize_user_ids(scale.get("userIds"))):
+                tables.append(table)
+        return tables
+
+    def _fetch_table(self, table: str, user_id) -> list[dict]:
+        """All of *user_id*'s rows in *table*: body composition endpoint, then legacy.
+
+        Some accounts answer empty on the body composition endpoint while the
+        legacy one holds every row, so an empty first answer is not the end.
+        """
+        rows = self.get_body_composition_measurements(table, user_id)
+        if not rows:
+            rows = self.get_measurements(table, user_id)
+        return rows
 
     @staticmethod
     def _take_new(records: list[dict], seen: set) -> list[dict]:
@@ -575,31 +605,37 @@ class RenphoClient:
         extra_user_ids: list | None = None,
         *,
         device_info: dict | None = None,
+        profile_user_id=None,
     ) -> list[dict]:
-        """High-level helper: fetch device info then pull all measurements.
+        """Fetch all measurements for one person, plus any *extra_user_ids*.
 
-        Tries the body composition endpoint first (used by impedance scales).
-        Falls back to the basic measurements endpoint for weight-only scales.
-        The server-side count in device info is unreliable for body composition
-        scales (often reports 0), so this method always attempts a fetch.
+        The person is the logged-in user unless *profile_user_id* names someone
+        else. The server filters every table by the user id in the query, so a
+        scale shared with family members only returns the rows of the person
+        asked for; their rows carry that id in ``bUserId``.
+
+        Each table :meth:`get_device_info` lists for the person is read, from
+        the body composition endpoint first and the legacy one if that comes
+        back empty. The device count is not used to decide, because it is
+        unreliable for body composition scales (often 0).
 
         Calls :meth:`login` first if no token is set.
 
         Args:
-            extra_user_ids: Additional user IDs to fetch measurements for. The
-                Renpho API allows a logged-in user to read measurements belonging
-                to other linked accounts (e.g. a separate account from before a
-                Google SSO migration). Each id is probed against all known
-                measurement tables. Pass these when you have multiple Renpho
-                accounts associated with the same physical scale.
+            extra_user_ids: More people to include, e.g. family members
+                (``[m["id"] for m in client.get_family_members()]``) or another
+                account on the same email (such as one left over from a Google
+                SSO migration). Tables that device info lists for an id are used
+                directly; otherwise they are located with
+                :meth:`discover_user_tables`.
             device_info: A result of :meth:`get_device_info` to reuse instead
                 of fetching it again.
+            profile_user_id: Fetch this person instead of the logged-in user,
+                e.g. a family member's ``id`` from :meth:`get_family_members`.
 
         Returns:
-            List of measurement dicts sorted by timestamp (newest first). When
-            *extra_user_ids* is used, records are deduped by ``(table, id)`` —
-            the same table can be reached both from device info and from
-            probing, but row ids are only unique within a table.
+            Measurement dicts sorted newest first, deduped by ``(table, id)``
+            (row ids are only unique within a table).
         """
         if not self.token:
             self.login()
@@ -608,47 +644,36 @@ class RenphoClient:
             device_info = self.get_device_info()
         scales = device_info.get("scale") or []
 
+        primary = self.user_id if profile_user_id is None else profile_user_id
+
         fetched: set = set()
+        done: set = set()
         all_measurements: list[dict] = []
 
-        def collect(table_name, uid, records):
-            """Add *records*, skipping rows already seen from the same table."""
-            for m in records:
-                rid = m.get("id")
-                key = (table_name, rid)
-                if rid is not None:
-                    if key in fetched:
-                        continue
-                    fetched.add(key)
-                all_measurements.append(m)
-
-        for scale in scales:
-            table_name = scale.get("tableName")
-            count = scale.get("count") or 0
-            user_ids = self._normalize_user_ids(scale.get("userIds"))
-
-            if not table_name:
+        for uid in [primary, *(extra_user_ids or [])]:
+            if uid is None or str(uid) in done:
                 continue
+            done.add(str(uid))
 
-            uid = self._scale_owner(user_ids)
+            tables = self._tables_listing(scales, uid)
+            if not tables:
+                if uid is primary:
+                    # Not on any scale: try the shard their id maps to, without
+                    # sweeping all 24 tables for someone who may have no data.
+                    shard = self.measurement_table_for(uid)
+                    tables = [shard] if shard else []
+                else:
+                    tables = self.discover_user_tables(uid)
 
-            # Try body composition endpoint first; it handles both newer
-            # impedance scales and cases where count is incorrectly zero.
-            measurements = self.get_body_composition_measurements(table_name, uid)
-            if not measurements and count > 0:
-                measurements = self.get_measurements(table_name, uid, count)
-
-            collect(table_name, uid, measurements)
-
-        for extra_uid in extra_user_ids or []:
-            for table in self.discover_user_tables(extra_uid):
-                # Same two-endpoint fallback as the main loop above: accounts
-                # that answer empty on the body composition endpoint still have
-                # their rows on the legacy one.
-                measurements = self.get_body_composition_measurements(table, extra_uid)
-                if not measurements:
-                    measurements = self.get_measurements(table, extra_uid)
-                collect(table, extra_uid, measurements)
+            for table in tables:
+                for m in self._fetch_table(table, uid):
+                    rid = m.get("id")
+                    if rid is not None:
+                        key = (table, str(rid))
+                        if key in fetched:
+                            continue
+                        fetched.add(key)
+                    all_measurements.append(m)
 
         all_measurements.sort(
             key=lambda m: m.get("timeStamp", 0) or 0,

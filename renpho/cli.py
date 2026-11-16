@@ -86,11 +86,18 @@ def main(argv: list[str] | None = None) -> None:
         )
         print(f"  [{i}] table={table}, records={count}, users=[{users}]")
 
-    # Step 3: Fetch measurements. get_all_measurements() tries the body
-    # composition endpoint before the legacy one, so it also reads tables whose
-    # count device/count reports as 0 (common for impedance scales).
-    print("\nFetching measurements...")
-    all_measurements = client.get_all_measurements(device_info=device_info)
+    # Step 3: Fetch measurements for you and everyone else on the account:
+    # family members, plus anyone listed on a scale (so a failed family lookup
+    # does not drop people). The server only returns the rows of the user id
+    # asked for, so each person is queried separately.
+    others: list = []
+    for uid in [m.get("id") for m in family] + [
+        u for scale in scales for u in scale.get("userIds", [])
+    ]:
+        if uid is not None and str(uid) != str(client.user_id) and str(uid) not in map(str, others):
+            others.append(uid)
+    print(f"\nFetching measurements for you and {len(others)} other profile(s)...")
+    all_measurements = client.get_all_measurements(others, device_info=device_info)
     for m in all_measurements:
         name = user_names.get(str(m.get("bUserId", client.user_id)))
         if name:
@@ -161,7 +168,7 @@ def _fetch_friend(client: RenphoClient, friend_id: str, output_dir: Path) -> Non
         return
 
     print(f"Total: {len(records)} day(s), newest {records[0]['day']}")
-    for i, r in enumerate(records[:5]):
+    for r in records[:5]:
         print(f"\n{'=' * 55}")
         print(f"  Day {r['day']}")
         print(f"{'=' * 55}")

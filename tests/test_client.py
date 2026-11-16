@@ -1,6 +1,5 @@
 """Tests for renpho.client — RenphoClient unit tests."""
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -13,9 +12,8 @@ from renpho.constants import (
     MEASUREMENT_TABLE_NAMES,
     PLATFORM,
     REQUEST_TIMEOUT,
-    SUCCESS_CODES,
 )
-from renpho.crypto import aes_decrypt, encrypt_request
+from renpho.crypto import encrypt_request
 
 
 class TestCheckResponse:
@@ -317,7 +315,9 @@ class TestGetAllMeasurementsCountZero:
             patch.object(client, "get_measurements", return_value=records) as mock_get,
         ):
             result = client.get_all_measurements()
-        mock_get.assert_called_once_with("measurements_info_8", 123, 5)
+        # No total is passed: device/count's count covers every user in the
+        # table, so it is not this user's total.
+        mock_get.assert_called_once_with("measurements_info_8", 123)
         assert result == records
 
 
@@ -513,14 +513,17 @@ class TestGetAllMeasurementsExtraUsers:
         device_info = {"scale": []}
         legacy = [{"id": 7, "weight": 80.0, "timeStamp": 2000}]
 
+        def legacy_rows(table, uid, *args, **kwargs):
+            return legacy if uid == "999" else []
+
         with (
             patch.object(client, "get_device_info", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", return_value=[]),
-            patch.object(client, "get_measurements", return_value=legacy) as mock_legacy,
+            patch.object(client, "get_measurements", side_effect=legacy_rows) as mock_legacy,
             patch.object(client, "discover_user_tables", return_value=["measurements_info_9"]),
         ):
             result = client.get_all_measurements(extra_user_ids=["999"])
-        mock_legacy.assert_called_once_with("measurements_info_9", "999")
+        mock_legacy.assert_any_call("measurements_info_9", "999")
         assert result == legacy
 
     def test_same_table_reached_twice_is_deduped(self):
