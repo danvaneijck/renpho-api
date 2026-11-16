@@ -317,6 +317,10 @@ records are unconfirmed. They return the server's data as-is.
 If you have this kind of data, an issue with the (redacted) record shapes would
 help firm these up.
 
+[docs/endpoints.md](docs/endpoints.md) lists every endpoint the Renpho app
+uses (366 paths), with request payloads, error codes and what has been
+verified for each.
+
 ### Error handling
 
 Every API error is a `RenphoAPIError` (with `.code`, `.msg`, `.context`).
@@ -521,6 +525,7 @@ renpho-api/
 │   ├── export.py         # JSON/CSV export helpers
 │   ├── girth.py          # Smart Tape Measure (body girth) helpers
 │   └── py.typed          # Marks the package as typed for type checkers
+├── docs/endpoints.md     # Every known API endpoint: payloads, codes, status
 ├── tests/                # Unit tests (network access is blocked)
 ├── Makefile              # make test / make lint / make check
 └── .github/workflows/    # CI (ruff + tests) and PyPI release automation
