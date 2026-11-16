@@ -86,35 +86,17 @@ def main(argv: list[str] | None = None) -> None:
         )
         print(f"  [{i}] table={table}, records={count}, users=[{users}]")
 
-    # Step 3: Fetch measurements
-    all_measurements: list[dict] = []
-    for scale in scales:
-        table_name = scale.get("tableName")
-        count = scale.get("count", 0)
-        user_ids = scale.get("userIds", [])
-
-        if not table_name or count == 0:
-            continue
-
-        uid = client.user_id
-        if user_ids and uid not in user_ids:
-            uid = user_ids[0]
-
-        print(f"Fetching measurements (table: {table_name}, total: {count})...")
-        measurements = client.get_measurements(table_name, uid, count)
-        for m in measurements:
-            name = user_names.get(str(m.get("bUserId", uid)))
-            if name:
-                m["userName"] = name
-        all_measurements.extend(measurements)
+    # Step 3: Fetch measurements. get_all_measurements() tries the body
+    # composition endpoint before the legacy one, so it also reads tables whose
+    # count device/count reports as 0 (common for impedance scales).
+    print("\nFetching measurements...")
+    all_measurements = client.get_all_measurements(device_info=device_info)
+    for m in all_measurements:
+        name = user_names.get(str(m.get("bUserId", client.user_id)))
+        if name:
+            m["userName"] = name
 
     if all_measurements:
-        # Sort newest first
-        all_measurements.sort(
-            key=lambda m: m.get("timeStamp", 0) or 0,
-            reverse=True,
-        )
-
         print(f"\nTotal: {len(all_measurements)} measurement(s)")
 
         # Display most recent 5

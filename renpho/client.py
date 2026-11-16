@@ -227,10 +227,57 @@ class RenphoClient:
         # result, so hand back an empty dict rather than None.
         data = self._post_empty(ENDPOINTS["device_info"], "GetDeviceInfo") or {}
 
+        # ``userIds`` has been seen as a list of ints, a list of strings and a
+        # bare scalar. Hand callers a list every time.
+        if isinstance(data, dict):
+            for scale in data.get("scale") or []:
+                if isinstance(scale, dict) and "userIds" in scale:
+                    scale["userIds"] = self._normalize_user_ids(scale["userIds"])
+
         if self.debug:
             print(f"  Device info: {json.dumps(data, indent=2)[:500]}")
 
         return data
+
+    @staticmethod
+    def _normalize_user_ids(value) -> list:
+        """Coerce a ``userIds`` field to a list, dropping null entries."""
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            return [v for v in value if v is not None]
+        return [value]
+
+    def _scale_owner(self, user_ids: list):
+        """The id to query a scale table with.
+
+        The logged-in user if the scale lists them, otherwise the first listed
+        id. IDs arrive as both int and str, so they are compared as strings: a
+        plain ``in`` check silently fell through to someone else's id whenever
+        the types differed.
+        """
+        if not user_ids or any(str(u) == str(self.user_id) for u in user_ids):
+            return self.user_id
+        return user_ids[0]
+
+    @staticmethod
+    def _take_new(records: list[dict], seen: set) -> list[dict]:
+        """Return the records in *records* not already in *seen*, and record them.
+
+        Pagination loops use this to stop when the server keeps answering with
+        a page it already sent, which would otherwise loop forever. Records are
+        keyed by ``id``, or by their full content when they have none.
+        """
+        new = []
+        for r in records:
+            rid = r.get("id") if isinstance(r, dict) else None
+            key = ("id", str(rid)) if rid is not None else (
+                "raw", json.dumps(r, sort_keys=True, default=str)
+            )
+            if key not in seen:
+                seen.add(key)
+                new.append(r)
+        return new
 
     def get_family_members(self) -> list[dict]:
         """Get the family members (sub-users) linked to the logged-in account.
@@ -268,6 +315,7 @@ class RenphoClient:
             List of measurement dicts.
         """
         all_measurements: list[dict] = []
+        seen: set = set()
         page = 1
 
         while total_count is None or len(all_measurements) < total_count:
@@ -300,7 +348,10 @@ class RenphoClient:
             if records is None:
                 break
 
-            all_measurements.extend(records)
+            new = self._take_new(records, seen)
+            if not new:
+                break  # the server repeated a page; stop instead of looping
+            all_measurements.extend(new)
             # Without a total to bound the loop, a short page is the only
             # signal that the last one has been read.
             if total_count is None and len(records) < page_size:
@@ -329,6 +380,7 @@ class RenphoClient:
             List of measurement dicts.
         """
         all_measurements: list[dict] = []
+        seen: set = set()
         page = 1
 
         while True:
@@ -363,7 +415,10 @@ class RenphoClient:
             if not records:
                 break
 
-            all_measurements.extend(records)
+            new = self._take_new(records, seen)
+            if not new:
+                break  # the server repeated a page; stop instead of looping
+            all_measurements.extend(new)
             if len(records) < page_size:
                 break
             page += 1
@@ -395,11 +450,12 @@ class RenphoClient:
         # return an empty list there while the legacy endpoint has the rows —
         # so a miss on the first is not proof the table is empty.
         for endpoint in ("body_composition_measurements", "measurements"):
-            # A table that does not exist is an expected miss, not an error:
-            # keep going rather than aborting the whole sweep.
+            # A table that does not exist is an expected miss, not an error,
+            # and neither is one probe timing out: keep going rather than
+            # aborting the whole sweep.
             try:
                 result = self._post(ENDPOINTS[endpoint], encrypted_body)
-            except requests.exceptions.HTTPError as e:
+            except requests.exceptions.RequestException as e:
                 if self.debug:
                     print(f"  Probe {table} via {endpoint} failed ({e}), skipping")
                 continue
@@ -479,6 +535,7 @@ class RenphoClient:
             self.login()
 
         all_measurements: list[dict] = []
+        seen: set = set()
         page = 1
 
         while True:
@@ -499,7 +556,10 @@ class RenphoClient:
             if not records:
                 break
 
-            all_measurements.extend(records)
+            new = self._take_new(records, seen)
+            if not new:
+                break  # the server repeated a page; stop instead of looping
+            all_measurements.extend(new)
             if len(records) < page_size:
                 break
             page += 1
@@ -510,7 +570,12 @@ class RenphoClient:
         )
         return all_measurements
 
-    def get_all_measurements(self, extra_user_ids: list | None = None) -> list[dict]:
+    def get_all_measurements(
+        self,
+        extra_user_ids: list | None = None,
+        *,
+        device_info: dict | None = None,
+    ) -> list[dict]:
         """High-level helper: fetch device info then pull all measurements.
 
         Tries the body composition endpoint first (used by impedance scales).
@@ -527,6 +592,8 @@ class RenphoClient:
                 Google SSO migration). Each id is probed against all known
                 measurement tables. Pass these when you have multiple Renpho
                 accounts associated with the same physical scale.
+            device_info: A result of :meth:`get_device_info` to reuse instead
+                of fetching it again.
 
         Returns:
             List of measurement dicts sorted by timestamp (newest first). When
@@ -537,8 +604,9 @@ class RenphoClient:
         if not self.token:
             self.login()
 
-        device_info = self.get_device_info()
-        scales = device_info.get("scale", [])
+        if device_info is None:
+            device_info = self.get_device_info()
+        scales = device_info.get("scale") or []
 
         fetched: set = set()
         all_measurements: list[dict] = []
@@ -556,15 +624,13 @@ class RenphoClient:
 
         for scale in scales:
             table_name = scale.get("tableName")
-            count = scale.get("count", 0)
-            user_ids = scale.get("userIds", [])
+            count = scale.get("count") or 0
+            user_ids = self._normalize_user_ids(scale.get("userIds"))
 
             if not table_name:
                 continue
 
-            uid = self.user_id
-            if user_ids and uid not in user_ids:
-                uid = user_ids[0]
+            uid = self._scale_owner(user_ids)
 
             # Try body composition endpoint first; it handles both newer
             # impedance scales and cases where count is incorrectly zero.
