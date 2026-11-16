@@ -12,6 +12,20 @@ from renpho.crypto import (
 )
 
 
+# Produced independently with OpenSSL, so a change in the crypto library that
+# still round-trips but no longer matches what Renpho's server expects fails:
+#   printf '%s' '{"pageNum":1,"pageSize":50}' \
+#     | openssl enc -aes-128-ecb -K "$(printf '%s' 'ed*wijdi$h6fe3ew' | xxd -p)" -nosalt \
+#     | base64
+KNOWN_PLAINTEXT = '{"pageNum":1,"pageSize":50}'
+KNOWN_CIPHERTEXT = "TQpN5l9b9crECU9E+tI7XgT/83F2rAmduNI+2X4IH5M="
+
+
+def test_aes_matches_openssl_known_answer():
+    assert aes_encrypt(KNOWN_PLAINTEXT) == KNOWN_CIPHERTEXT
+    assert aes_decrypt(KNOWN_CIPHERTEXT) == KNOWN_PLAINTEXT
+
+
 def test_aes_round_trip():
     plaintext = "hello world"
     encrypted = aes_encrypt(plaintext)

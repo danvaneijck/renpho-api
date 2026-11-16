@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renpho-api"
-version = "0.2.1"
+version = "0.3.0"
 description = "Unofficial Python client for the Renpho Health API — pull body composition data from Renpho smart scales and body girth data from smart tape measures."
 readme = "README.md"
 license = "MIT"
