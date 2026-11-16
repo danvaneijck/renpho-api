@@ -14,6 +14,7 @@ from .constants import (
     MEASUREMENT_TABLE_NAMES,
     MEASUREMENT_TABLE_SHARDS,
     PLATFORM,
+    REQUEST_TIMEOUT,
     SUCCESS_CODES,
     SYSTEM_VERSION,
 )
@@ -61,10 +62,28 @@ class RenphoClient:
             print(m["weight"], m.get("bodyfat"))
     """
 
-    def __init__(self, email: str, password: str, *, debug: bool = False):
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        *,
+        debug: bool = False,
+        timeout: float | tuple[float, float] | None = REQUEST_TIMEOUT,
+    ):
+        """
+        Args:
+            email: Renpho account email.
+            password: Renpho account password.
+            debug: Print request/response details.
+            timeout: Per-request timeout in seconds, either one number or a
+                ``(connect, read)`` pair. Defaults to
+                :data:`~renpho.constants.REQUEST_TIMEOUT`. ``None`` disables it
+                (not recommended: a stalled server then blocks forever).
+        """
         self.email = email
         self.password = password
         self.debug = debug
+        self.timeout = timeout
         self.token: str | None = None
         self.user_id: int | str | None = None
         self.user_info: dict | None = None
@@ -112,7 +131,9 @@ class RenphoClient:
             if auth and self.token:
                 print(f"  Headers: token={self.token[:20]}..., userId={self.user_id}")
 
-        resp = self._session.post(url, json=body, headers=headers)
+        resp = self._session.post(
+            url, json=body, headers=headers, timeout=self.timeout
+        )
 
         if self.debug:
             print(f"  Status: {resp.status_code}")
