@@ -20,6 +20,11 @@ APP_VERSION = "6.6.0"
 PLATFORM = "android"
 SYSTEM_VERSION = "11"  # systemversion header value (mirrors the login systemType)
 
+# Default per-request timeout in seconds, as ``(connect, read)``. Without one a
+# stalled server hangs the caller forever, which for a scheduled sync means a
+# job that never finishes and never reports an error.
+REQUEST_TIMEOUT = (10, 30)
+
 # API endpoints (from RenphoApiEndpoints.cs)
 ENDPOINTS = {
     "login": "renpho-aggregation/user/login",

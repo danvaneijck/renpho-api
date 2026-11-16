@@ -12,6 +12,7 @@ from renpho.constants import (
     ENDPOINTS,
     MEASUREMENT_TABLE_NAMES,
     PLATFORM,
+    REQUEST_TIMEOUT,
     SUCCESS_CODES,
 )
 from renpho.crypto import aes_decrypt, encrypt_request
@@ -163,6 +164,31 @@ class TestRenphoClient:
     def test_init_debug(self):
         client = RenphoClient("a@b.com", "p", debug=True)
         assert client.debug is True
+
+
+class TestRequestTimeout:
+    """Every request must carry a timeout, or a stalled server hangs forever."""
+
+    @staticmethod
+    def _sent_timeout(client):
+        with patch.object(client._session, "post") as post:
+            post.return_value = MagicMock(
+                status_code=200, json=lambda: {"code": 101, "msg": "success"}
+            )
+            client._post(ENDPOINTS["login"], {"encryptData": "x"}, auth=False)
+        return post.call_args.kwargs["timeout"]
+
+    def test_default_timeout_is_sent(self):
+        assert self._sent_timeout(RenphoClient("a@b.com", "p")) == REQUEST_TIMEOUT
+
+    def test_default_timeout_is_bounded(self):
+        assert REQUEST_TIMEOUT is not None
+
+    def test_custom_timeout_is_sent(self):
+        assert self._sent_timeout(RenphoClient("a@b.com", "p", timeout=5)) == 5
+
+    def test_timeout_can_be_disabled(self):
+        assert self._sent_timeout(RenphoClient("a@b.com", "p", timeout=None)) is None
 
 
 class TestGetBodyCompositionMeasurements:
