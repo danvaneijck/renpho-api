@@ -182,6 +182,26 @@ except RenphoAPIError as e:
     print(f"API error: {e}")
 ```
 
+Requests time out after 10 s to connect and 30 s to read by default. Pass
+`RenphoClient(..., timeout=60)` (or a `(connect, read)` pair) to change that.
+
+### Troubleshooting login
+
+- **`code=-114` ("Decryption failed …").** Renpho's gateway changed in October
+  2026 and now needs an `appVersion` header on the login request. Upgrade to
+  `renpho-api>=0.2.1`. `APP_VERSION` must stay below `8.0.0`, because the
+  bundled AES key only works for app versions before 8.0.0.
+- **`code=104` ("wrong user name or password") with a correct password.**
+  Upgrade to 0.2.1 first. If it persists, check whether the account signs in
+  with Google or Apple (next point), and if not, report it in
+  [#10](https://github.com/danvaneijck/renpho-api/issues/10).
+- **Your account signs in with Google or Apple.** These accounts have no
+  password, so they cannot log in through the API.
+- **The phone app logs you out after a sync.** Renpho allows one active
+  session per account, so every `login()` ends the app's session. If you run
+  scheduled syncs, run them less often or use a separate account
+  (see [#14](https://github.com/danvaneijck/renpho-api/issues/14)).
+
 ## Smart Tape Measure (body girth)
 
 The Renpho Smart Tape Measure stores circumference measurements (waist, hip,

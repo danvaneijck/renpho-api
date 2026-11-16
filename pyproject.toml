@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "renpho-api"
-version = "0.2.0"
+version = "0.2.1"
 description = "Unofficial Python client for the Renpho Health API — pull body composition data from Renpho smart scales and body girth data from smart tape measures."
 readme = "README.md"
 license = "MIT"
@@ -27,6 +27,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
@@ -43,6 +44,11 @@ Repository = "https://github.com/danvaneijck/renpho-api"
 
 [project.scripts]
 renpho = "renpho.cli:main"
+
+# Explicit, because flat-layout auto-discovery also picks up the CLI's default
+# output folder (renpho_data/) once it exists and then refuses to build.
+[tool.setuptools]
+packages = ["renpho"]
 
 [dependency-groups]
 dev = [

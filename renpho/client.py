@@ -14,6 +14,7 @@ from .constants import (
     MEASUREMENT_TABLE_NAMES,
     MEASUREMENT_TABLE_SHARDS,
     PLATFORM,
+    REQUEST_TIMEOUT,
     SUCCESS_CODES,
     SYSTEM_VERSION,
 )
@@ -38,10 +39,15 @@ class RenphoAPIError(Exception):
 def _check_response(result: dict, context: str = "API call") -> None:
     """Raise :class:`RenphoAPIError` if the response indicates failure."""
     code = result.get("code")
-    msg = result.get("msg", "")
-    if msg.lower() == "success" or code in SUCCESS_CODES:
+    # The API is inconsistent about the field holding the human-readable text:
+    # the older endpoints answer "msg", the gateway's own errors (-113, -114)
+    # answer "message". Reading only one of them silently threw away the
+    # diagnostic and left callers with a bare code to go on. Either may also be
+    # explicitly null, hence the coalesce to "" rather than a dict default.
+    msg = result.get("msg") or result.get("message") or ""
+    if str(msg).lower() == "success" or code in SUCCESS_CODES:
         return
-    raise RenphoAPIError(context, code, msg)
+    raise RenphoAPIError(context, code, str(msg))
 
 
 class RenphoClient:
@@ -56,10 +62,28 @@ class RenphoClient:
             print(m["weight"], m.get("bodyfat"))
     """
 
-    def __init__(self, email: str, password: str, *, debug: bool = False):
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        *,
+        debug: bool = False,
+        timeout: float | tuple[float, float] | None = REQUEST_TIMEOUT,
+    ):
+        """
+        Args:
+            email: Renpho account email.
+            password: Renpho account password.
+            debug: Print request/response details.
+            timeout: Per-request timeout in seconds, either one number or a
+                ``(connect, read)`` pair. Defaults to
+                :data:`~renpho.constants.REQUEST_TIMEOUT`. ``None`` disables it
+                (not recommended: a stalled server then blocks forever).
+        """
         self.email = email
         self.password = password
         self.debug = debug
+        self.timeout = timeout
         self.token: str | None = None
         self.user_id: int | str | None = None
         self.user_info: dict | None = None
@@ -86,12 +110,19 @@ class RenphoClient:
                 set than the default reads.
         """
         url = f"{API_BASE_URL}/{endpoint}"
-        headers: dict[str, str] = {}
+        # ``appVersion`` is what the gateway keys payload decryption off, so it
+        # has to go out on *every* call — including the unauthenticated login,
+        # which used to send no headers at all. Without it the server cannot
+        # pick a key and answers code -114 ("Decryption failed, please check
+        # the parameters or key, ..."), which reads like a wrong key but is
+        # really a missing header. See APP_VERSION in constants.py.
+        headers: dict[str, str] = {
+            "appVersion": APP_VERSION,
+            "platform": PLATFORM,
+        }
         if auth and self.token:
             headers["token"] = self.token
             headers["userId"] = str(self.user_id)
-            headers["appVersion"] = APP_VERSION
-            headers["platform"] = PLATFORM
         if extra_headers:
             headers.update(extra_headers)
 
@@ -100,7 +131,9 @@ class RenphoClient:
             if auth and self.token:
                 print(f"  Headers: token={self.token[:20]}..., userId={self.user_id}")
 
-        resp = self._session.post(url, json=body, headers=headers)
+        resp = self._session.post(
+            url, json=body, headers=headers, timeout=self.timeout
+        )
 
         if self.debug:
             print(f"  Status: {resp.status_code}")
