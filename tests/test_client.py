@@ -297,7 +297,7 @@ class TestGetAllMeasurementsCountZero:
             "scale": [{"tableName": "measurements_info_8", "count": 0, "userIds": [123]}]
         }
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", return_value=records),
         ):
             result = client.get_all_measurements()
@@ -310,7 +310,7 @@ class TestGetAllMeasurementsCountZero:
             "scale": [{"tableName": "measurements_info_8", "count": 5, "userIds": [123]}]
         }
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", return_value=[]),
             patch.object(client, "get_measurements", return_value=records) as mock_get,
         ):
@@ -500,7 +500,7 @@ class TestGetAllMeasurementsExtraUsers:
             return mine if table == "measurements_info_1" else theirs
 
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", side_effect=by_table),
             patch.object(client, "discover_user_tables", return_value=["measurements_info_9"]),
         ):
@@ -517,7 +517,7 @@ class TestGetAllMeasurementsExtraUsers:
             return legacy if uid == "999" else []
 
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", return_value=[]),
             patch.object(client, "get_measurements", side_effect=legacy_rows) as mock_legacy,
             patch.object(client, "discover_user_tables", return_value=["measurements_info_9"]),
@@ -534,7 +534,7 @@ class TestGetAllMeasurementsExtraUsers:
         records = [{"id": 1, "weight": 70.0, "timeStamp": 1000}]
 
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", return_value=records),
             patch.object(client, "discover_user_tables", return_value=["measurements_info_1"]),
         ):
@@ -556,7 +556,7 @@ class TestGetAllMeasurementsExtraUsers:
         }
 
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(
                 client,
                 "get_body_composition_measurements",
@@ -573,7 +573,7 @@ class TestGetAllMeasurementsExtraUsers:
             "scale": [{"tableName": "measurements_info_1", "count": 1, "userIds": [123]}]
         }
         with (
-            patch.object(client, "get_device_info", return_value=device_info),
+            patch.object(client, "get_data_counts", return_value=device_info),
             patch.object(client, "get_body_composition_measurements", return_value=[]),
             patch.object(client, "get_measurements", return_value=[]),
             patch.object(client, "discover_user_tables") as mock_probe,

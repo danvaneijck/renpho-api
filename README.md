@@ -22,7 +22,7 @@ pip install "renpho-api[dotenv]"
 
 ## CLI Usage
 
-1. Create a `.env` file (or export the variables):
+1. Create a `.env` file (copy `.env.example`, or export the variables):
 
 ```ini
 RENPHO_EMAIL=your@email.com
@@ -32,7 +32,7 @@ RENPHO_PASSWORD=your_plain_text_password
 2. Run the CLI:
 
 ```bash
-renpho
+renpho            # or, from a source checkout: python -m renpho
 ```
 
 This will log in, discover your scales, fetch all measurements, print the 5 most
@@ -42,7 +42,13 @@ one simply report no girth records.
 
 The CLI exports measurements for you and every family member on the account.
 Each row is tagged with a `userName` field, and the family profiles are saved to
-`family_members.json`.
+`family_members.json`. Session tokens and password fields are never written to
+these files.
+
+Set `RENPHO_SESSION_FILE` to reuse the login between runs: the CLI then logs in
+only when the saved session has been ended by another login (see
+[Sessions](#sessions-reusing-a-login)). A run that reuses a session doesn't know
+your display name, so your own rows have no `userName` that time.
 
 ### Environment variables
 
@@ -53,6 +59,7 @@ Each row is tagged with a `userName` field, and the family profiles are saved to
 | `RENPHO_DEBUG` | No | Set to `1` to print API request/response details |
 | `RENPHO_OUTPUT_DIR` | No | Output directory (default: `renpho_data`) |
 | `RENPHO_FRIEND_ID` | No | Read this friend's daily data instead of your own (see [Reading through a friend account](#reading-through-a-friend-account)) |
+| `RENPHO_SESSION_FILE` | No | Save the session here and reuse it on the next run (e.g. `~/.config/renpho/session.json`) |
 
 ## Library Usage
 
@@ -240,14 +247,97 @@ independent even when emails collide. Options:
 Once you have the ID, save it alongside your credentials and you won't
 need to discover it again.
 
-### Error handling
+### Sessions: reusing a login
+
+Two facts, checked on a live account in November 2026, shape how to use the API:
+
+- **One session per account.** Any login ends every other session on the
+  account, on any platform. Logging in from a script signs the phone app out,
+  and logging back in on the phone ends the script's session. (Sending
+  `platform: "web"` does not get around this.)
+- **Tokens last 90 days.** Until another login ends it, a session can be
+  reused for months.
+
+So a script that runs often should keep its session instead of logging in each
+time:
 
 ```python
-from renpho import RenphoClient, RenphoAPIError
+client = RenphoClient("user@example.com", "password",
+                      session_file="~/.config/renpho/session.json")
+measurements = client.get_all_measurements()  # logs in only if no usable saved session
+```
 
-client = RenphoClient("user@example.com", "wrong_password")
+The file is written with mode `0600` and holds the session token, not the
+password. Treat it like a password anyway: it grants access to the account
+until it expires.
+
+When another login has ended the saved session, calls raise
+`RenphoSessionError`. Pass `auto_relogin=True` to log in again and retry once
+instead. That login signs the phone app out again, which is why it is off by
+default. To avoid that conflict entirely, read your data from a second account
+(see [Reading through a friend account](#reading-through-a-friend-account)),
+which then only needs to log in once every 90 days.
+
+Lower-level pieces: `client.token_expires_at` (unix seconds, from the token),
+`client.get_token_info()` (asks the server; raises `RenphoSessionError` if the
+session is dead), and `export_session()` / `import_session()` /
+`save_session()` / `load_session()`.
+
+### Devices and data counts
+
+After `login()`, `client.devices` lists the scales and other devices bound to
+the account, each with `deviceModel`, `deviceName`, `deviceType`, `mac`,
+`firmwareVersion` and a `connection` of `"bluetooth"` or `"wifi"`.
+
+```python
+client.get_measurement_count()   # 31: your total, in one cheap request
+client.get_data_counts()         # tables per store, plus girth/rope/treadmill/step/goal totals
+```
+
+`get_measurement_count()` is a cheap "has anything new arrived?" check before a
+full fetch. `get_data_counts()` is what the Renpho app uses in place of
+`get_device_info()`: it lists each measurement table for both the legacy scale
+store (`scale`) and the body composition store (`compositionScale`), and
+`get_all_measurements()` uses those counts to read only the stores that hold
+rows.
+
+### Experimental endpoints
+
+These were found in the Renpho Health app (7.11.6) and answer on a live
+account, but that account had none of this data, so the fields of individual
+records are unconfirmed. They return the server's data as-is.
+
+| Method | Returns |
+| --- | --- |
+| `get_unassigned_measurements()` | Weigh-ins the scale couldn't attribute to a profile |
+| `get_third_party_measurements()` | Measurements imported from other apps (Fitbit, Health Connect, Samsung Health) |
+| `get_third_party_sources()` | The third-party sources linked to the account |
+| `get_goals()` | `{"scale": [...], "girth": [...]}` goals set in the app |
+
+If you have this kind of data, an issue with the (redacted) record shapes would
+help firm these up.
+
+### Error handling
+
+Every API error is a `RenphoAPIError` (with `.code`, `.msg`, `.context`).
+Specific cases have subclasses:
+
+| Exception | When |
+| --- | --- |
+| `RenphoAuthError` | Wrong password or unknown email (codes 104, 106, 20001), or `login(expected_user_id=...)` landed on another account |
+| `RenphoSessionError` | The session expired or another login replaced it (401/403) |
+| `RenphoRateLimitError` | Too many requests (429) |
+
+```python
+from renpho import RenphoAPIError, RenphoAuthError, RenphoClient, RenphoSessionError
+
+client = RenphoClient("user@example.com", "password")
 try:
-    client.login()
+    measurements = client.get_all_measurements()
+except RenphoAuthError:
+    print("Check the email and password")
+except RenphoSessionError:
+    print("Signed out by another login; log in again")
 except RenphoAPIError as e:
     print(f"API error: {e}")
 ```
@@ -268,8 +358,10 @@ Requests time out after 10 s to connect and 30 s to read by default. Pass
 - **Your account signs in with Google or Apple.** These accounts have no
   password, so they cannot log in through the API.
 - **The phone app logs you out after a sync.** Renpho allows one active
-  session per account, so every `login()` ends the app's session. If you run
-  scheduled syncs, read your data from a second account instead (see
+  session per account, so every `login()` ends the app's session. Reuse the
+  session between runs to log in far less often (see
+  [Sessions](#sessions-reusing-a-login)), or read your data from a second
+  account so the phone is never signed out (see
   [Reading through a friend account](#reading-through-a-friend-account)).
 
 ## Smart Tape Measure (body girth)
@@ -421,6 +513,7 @@ renpho-api/
 ├── README.md
 ├── renpho/
 │   ├── __init__.py       # Public API exports
+│   ├── __main__.py       # python -m renpho
 │   ├── client.py         # RenphoClient class
 │   ├── cli.py            # CLI entry point
 │   ├── constants.py      # API endpoints, device types, metrics, girth sites

@@ -591,9 +591,10 @@ wheels = [
 
 [[package]]
 name = "renpho-api"
-version = "0.4.0"
+version = "0.5.0"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "pycryptodome" },
     { name = "requests" },
 ]
@@ -614,6 +615,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2026.10.19" },
     { name = "pycryptodome", specifier = ">=3.15" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "python-dotenv", marker = "extra == 'dotenv'", specifier = ">=1.0" },

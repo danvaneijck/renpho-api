@@ -160,7 +160,7 @@ class TestCliFriendMode:
         monkeypatch.setenv("RENPHO_OUTPUT_DIR", str(tmp_path))
         records = [{"day": "2026-11-02", "timeStamp": 200, "weight": 79.5}]
         with patch.object(RenphoClient, "login"), \
-             patch.object(RenphoClient, "get_device_info") as device_info, \
+             patch.object(RenphoClient, "get_data_counts") as device_info, \
              patch.object(RenphoClient, "get_friend_measurements", return_value=records):
             main()
         device_info.assert_not_called()

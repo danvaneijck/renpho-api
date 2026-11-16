@@ -16,6 +16,13 @@ except ImportError:
 from .client import RenphoAPIError, RenphoClient
 from .export import format_girth, format_measurement, save_csv, save_json
 
+# Never written to disk: the session token grants account access for 90 days.
+_SECRET_KEYS = ("token", "encryptedPassword", "password")
+
+
+def _strip_secrets(record: dict) -> dict:
+    return {k: v for k, v in record.items() if k not in _SECRET_KEYS}
+
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``renpho`` CLI command."""
@@ -24,6 +31,7 @@ def main(argv: list[str] | None = None) -> None:
     debug = os.getenv("RENPHO_DEBUG", "").lower() in ("1", "true", "yes")
     output_dir = Path(os.getenv("RENPHO_OUTPUT_DIR", "renpho_data"))
     friend_id = os.getenv("RENPHO_FRIEND_ID", "").strip()
+    session_file = os.getenv("RENPHO_SESSION_FILE", "").strip() or None
 
     if not email or not password:
         print("Missing credentials!\n")
@@ -33,20 +41,28 @@ def main(argv: list[str] | None = None) -> None:
         print("  RENPHO_DEBUG=1  # optional")
         sys.exit(1)
 
-    client = RenphoClient(email, password, debug=debug)
+    # With a session file, a saved session is reused and only replaced (by a
+    # fresh login) once another login has ended it.
+    client = RenphoClient(
+        email, password, debug=debug,
+        session_file=session_file, auto_relogin=bool(session_file),
+    )
 
-    # Step 1: Login
-    print(f"Logging in as {email}...")
-    client.login()
-    print(f"Logged in! User ID: {client.user_id}")
+    # Step 1: Login, or reuse the saved session
+    if session_file and client.load_session():
+        print(f"Reusing saved session from {session_file} (user ID {client.user_id})")
+    else:
+        print(f"Logging in as {email}...")
+        client.login()
+        print(f"Logged in! User ID: {client.user_id}")
 
     if friend_id:
         _fetch_friend(client, friend_id, output_dir)
         return
 
-    # Step 2: Device info
+    # Step 2: Data counts (tables per store, plus totals per data type)
     print("Getting device info...")
-    device_info = client.get_device_info()
+    device_info = client.get_data_counts()
 
     if not device_info:
         print("Could not get device info")
@@ -67,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"  Family member lookup failed: {e}")
         family = []
     if family:
-        save_json(family, output_dir / "family_members.json")
+        save_json([_strip_secrets(m) for m in family], output_dir / "family_members.json")
     user_names = {
         str(m["id"]): m["accountName"]
         for m in family
@@ -148,7 +164,7 @@ def main(argv: list[str] | None = None) -> None:
         print("  No girth records found.")
 
     if client.user_info:
-        save_json(client.user_info, output_dir / "user_profile.json")
+        save_json(_strip_secrets(client.user_info), output_dir / "user_profile.json")
 
     print(f"\nDone! Data saved to '{output_dir}/' folder.")
 
